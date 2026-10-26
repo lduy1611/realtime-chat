@@ -53,6 +53,10 @@
         <button id="sidebar-open" class="icon-btn" aria-label="Open sidebar">&#9776;</button>
         <h1>#<span id="room-name"></span></h1>
         <span id="status" class="status online">online</span>
+        <div id="connection-test-controls" class="connection-test-controls" hidden>
+          <button id="simulate-disconnect" class="btn ghost test-btn" type="button">Simulate Disconnect</button>
+          <button id="simulate-reconnect" class="btn ghost test-btn" type="button" disabled>Reconnect</button>
+        </div>
       </header>
       <ul id="messages" class="messages" aria-live="polite"></ul>
       <p id="typing" class="typing"></p>

@@ -165,6 +165,10 @@ input:focus { border-color: var(--accent); }
   background: var(--bg-elev);
 }
 .chat-header h1 { font-size: 1.1rem; flex: 1; }
+.connection-test-controls { display: flex; align-items: center; gap: 0.35rem; }
+.connection-test-controls[hidden] { display: none; }
+.test-btn { padding: 0.35rem 0.55rem; font-size: 0.72rem; white-space: nowrap; }
+.test-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .status { font-size: 0.75rem; color: var(--muted); }
 .status::before {
   content: "";
@@ -175,6 +179,7 @@ input:focus { border-color: var(--accent); }
   margin-right: 0.35rem;
 }
 .status.online::before { background: var(--success); }
+.status.reconnecting::before { background: var(--accent); }
 
 .messages {
   flex: 1;

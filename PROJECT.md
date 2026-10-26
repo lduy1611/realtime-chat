@@ -158,7 +158,7 @@ queries in `src/messages.js`.
 
 `tests/chat.test.js` contains Socket.IO integration tests using an injected fake message store, and
 `tests/messages.test.js` verifies parameterised query construction and row mapping. Together the suite
-contains **22 tests**. The chat suite calls `createServer({ messageStore, historyLimit: 5, rateLimit: { limit: 3, windowMs: 1000 } })` and listens on
+contains **25 tests**. The chat suite calls `createServer({ messageStore, historyLimit: 5, rateLimit: { limit: 3, windowMs: 1000 } })` and listens on
 port `0`; each test connects real `socket.io-client` instances to the assigned port, so routing,
 acks and room scoping are verified over an actual socket rather than through mocks.
 

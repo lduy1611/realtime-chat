@@ -23,13 +23,19 @@
     messageForm: $('message-form'),
     messageInput: $('message-input'),
     status: $('status'),
+    connectionTestControls: $('connection-test-controls'),
+    simulateDisconnect: $('simulate-disconnect'),
+    simulateReconnect: $('simulate-reconnect'),
     sidebar: $('sidebar'),
     sidebarOpen: $('sidebar-open'),
     sidebarClose: $('sidebar-close'),
     leaveBtn: $('leave-btn')
   };
 
-  const state = { username: null, room: null, typing: new Set(), typingTimer: null, isTyping: false };
+  const state = {
+    username: null, room: null, typing: new Set(), typingTimer: null, isTyping: false,
+    seenMessageIds: new Set(), lastMessageId: 0, developmentMode: false
+  };
 
   const formatTime = (ts) =>
     new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -84,6 +90,14 @@
   }
 
   function appendMessage(m) {
+    if (m.type === 'chat' && m.id != null) {
+      const id = Number(m.id);
+      const key = String(m.id);
+      if (state.seenMessageIds.has(key)) return;
+      state.seenMessageIds.add(key);
+      if (Number.isSafeInteger(id) && id > state.lastMessageId) state.lastMessageId = id;
+    }
+
     const li = document.createElement('li');
     li.className = 'msg ' + m.type;
     const bubble = document.createElement('div');
@@ -132,6 +146,8 @@
       el.roomNameSide.textContent = res.room;
       el.me.textContent = res.username;
       el.messages.innerHTML = '';
+      state.seenMessageIds.clear();
+      state.lastMessageId = 0;
       for (const m of res.history) appendMessage(m);
       localNotice('You joined #' + res.room);
       el.joinScreen.classList.add('hidden');
@@ -142,6 +158,19 @@
   });
 
   el.leaveBtn.addEventListener('click', () => window.location.reload());
+
+  el.simulateDisconnect.addEventListener('click', () => {
+    if (!state.developmentMode || !socket.connected) return;
+    el.simulateDisconnect.disabled = true;
+    el.simulateReconnect.disabled = false;
+    socket.disconnect();
+  });
+
+  el.simulateReconnect.addEventListener('click', () => {
+    if (!state.developmentMode || socket.connected) return;
+    el.simulateReconnect.disabled = true;
+    socket.connect();
+  });
 
   // ---- messaging -------------------------------------------------------
 
@@ -177,19 +206,67 @@
     if (isTyping) state.typing.add(username); else state.typing.delete(username);
     renderTyping();
   });
-  socket.on('connect', () => { el.status.textContent = 'online'; el.status.classList.add('online'); });
+  function setConnectionStatus(status) {
+    el.status.classList.remove('online', 'reconnecting');
+    if (status === 'online') {
+      el.status.textContent = 'online';
+      el.status.classList.add('online');
+    } else if (status === 'reconnecting') {
+      el.status.textContent = 'reconnecting...';
+      el.status.classList.add('reconnecting');
+    } else {
+      el.status.textContent = 'connection lost';
+    }
+  }
+
+  function rejoinAndSync() {
+    socket.emit('join', { username: state.username, room: state.room }, (res) => {
+      if (!res.ok) {
+        localNotice(res.error, 'error');
+        return setConnectionStatus('offline');
+      }
+      socket.emit('messages:sync', { afterId: state.lastMessageId }, (sync) => {
+        if (!sync.ok) localNotice(sync.error, 'error');
+        else for (const message of sync.messages) appendMessage(message);
+        setConnectionStatus('online');
+        localNotice('Reconnected');
+      });
+    });
+  }
+
+  socket.on('connect', () => {
+    if (state.developmentMode) {
+      el.simulateDisconnect.disabled = false;
+      el.simulateReconnect.disabled = true;
+    }
+    if (state.room) {
+      setConnectionStatus('reconnecting');
+      rejoinAndSync();
+    } else {
+      setConnectionStatus('online');
+    }
+  });
   socket.on('disconnect', () => {
-    el.status.textContent = 'offline';
-    el.status.classList.remove('online');
+    if (state.developmentMode) {
+      el.simulateDisconnect.disabled = true;
+      el.simulateReconnect.disabled = false;
+    }
+    setConnectionStatus('offline');
     if (state.room) localNotice('Connection lost. Reconnecting...', 'error');
   });
-  socket.io.on('reconnect', () => {
-    if (!state.room) return;
-    socket.emit('join', { username: state.username, room: state.room }, (res) => {
-      if (res.ok) localNotice('Reconnected');
-      else window.location.reload();
-    });
-  });
+  socket.io.on('reconnect_attempt', () => setConnectionStatus('reconnecting'));
+  socket.io.on('reconnect_failed', () => setConnectionStatus('offline'));
+
+  fetch('/api/config')
+    .then((response) => response.ok ? response.json() : null)
+    .then((config) => {
+      if (!config || config.developmentMode !== true) return;
+      state.developmentMode = true;
+      el.connectionTestControls.hidden = false;
+      el.simulateDisconnect.disabled = !socket.connected;
+      el.simulateReconnect.disabled = socket.connected;
+    })
+    .catch(() => { /* Keep development controls hidden if config cannot be read. */ });
 
   // ---- sidebar (mobile) ------------------------------------------------
 

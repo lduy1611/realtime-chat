@@ -3,7 +3,7 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![Socket.IO](https://img.shields.io/badge/socket.io-4.x-010101?logo=socket.io)](https://socket.io)
 [![Express](https://img.shields.io/badge/express-4.x-000000?logo=express)](https://expressjs.com)
-[![Tests](https://img.shields.io/badge/tests-22%20passing-4cd28a)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-25%20passing-4cd28a)](#running-tests)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A real-time chat application with rooms, built on **Express** and **Socket.IO** with a dependency-free
@@ -26,7 +26,9 @@ escapes HTML, enforces length limits and rate-limits each socket.
 - **Private messages** – `/pm <user> <message>` delivers to one recipient, echoes to the sender, and is saved privately in MySQL
 - **Sanitisation** – HTML is escaped server-side; messages are trimmed and capped at 500 characters
 - **Rate limiting** – sliding window of 5 messages per second per socket
-- **Graceful disconnects** – leave notices, user/room lists and typing state all clean up; the client re-joins automatically on reconnect
+- **Reconnect recovery** – the client rejoins its room and fetches only missing group messages by database ID, suppressing duplicates
+- **Connection status** – shows online, connection lost and reconnecting states
+- **Graceful disconnects** – leave notices, user/room lists and typing state all clean up
 - **Responsive dark UI** – collapsible sidebar on small screens, own messages aligned right, private messages highlighted
 
 ## UI at a glance
@@ -96,6 +98,22 @@ npm run dev          # restarts on file changes (node --watch)
 Open the URL in two or more browser tabs, pick different usernames and the same room, and start chatting.
 Type `/pm bob hello` to send a private message to `bob`.
 
+### Demo Socket.IO reconnect on one laptop
+
+Start the app in PowerShell with development mode enabled:
+
+```powershell
+$env:NODE_ENV = 'development'
+npm start
+```
+
+Open `http://localhost:3000` in two tabs or browser windows. Join the same room as `alice` in one
+client and `bob` in the other. In Alice's client, click **Simulate Disconnect**; only that browser's
+Socket.IO connection is closed. Send a few group messages from Bob, then click **Reconnect** in
+Alice's client. Alice rejoins and receives the missing room messages from MySQL, with message IDs
+preventing duplicates. The Node.js process and MySQL remain running. The test controls are shown only
+when `NODE_ENV=development`; they stay hidden in production and other modes.
+
 ### HTTP endpoints
 
 | Method | Path          | Description                                  |
@@ -147,8 +165,9 @@ Integration tests spin up the real server on a random port and drive it with `so
 npm test
 ```
 
-22 tests cover joining and validation, room list API and live updates, broadcast scoping, sanitisation,
-rate limiting, history delivery and capping, typing relay, private-message routing and persistence errors.
+25 tests cover joining and validation, room list API and live updates, broadcast scoping, sanitisation,
+rate limiting, history delivery and capping, typing relay, private-message routing, persistence errors
+and reconnect synchronization.
 
 ## Project structure
 

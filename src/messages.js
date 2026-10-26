@@ -28,6 +28,21 @@ class MessageStore {
       text: row.text
     }));
   }
+
+  async getRoomMessagesAfter(room, afterId) {
+    const [rows] = await this.pool.execute(
+      'SELECT id, type, room, sender, text, created_at_ms AS timestamp FROM messages WHERE room = ? AND type = ? AND id > ? ORDER BY id ASC',
+      [room, 'chat', afterId]
+    );
+    return rows.map((row) => ({
+      id: Number(row.id),
+      type: row.type,
+      room: row.room,
+      timestamp: Number(row.timestamp),
+      from: row.sender,
+      text: row.text
+    }));
+  }
 }
 
 module.exports = { MessageStore };

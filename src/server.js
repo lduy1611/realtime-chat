@@ -25,12 +25,18 @@ function createServer(options = {}) {
   const io = new Server(httpServer);
   const rooms = new RoomStore({ historyLimit: options.historyLimit });
   const messageStore = options.messageStore;
+  const developmentMode = options.developmentMode ?? process.env.NODE_ENV === 'development';
   if (!messageStore) throw new Error('createServer requires a messageStore');
 
   app.use(express.static(path.join(__dirname, '..', 'public')));
 
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', uptime: process.uptime() });
+  });
+
+  app.get('/api/config', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({ developmentMode });
   });
 
   app.get('/api/rooms', (req, res) => {
@@ -131,6 +137,25 @@ function createServer(options = {}) {
       } catch (error) {
         console.error('Failed to save room message:', error);
         reply({ ok: false, error: 'Message could not be saved. Please try again.' });
+      }
+    });
+
+    socket.on('messages:sync', async (payload, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
+      const { room } = socket.data;
+      if (!room) return reply({ ok: false, error: 'Join a room first' });
+
+      const afterId = payload && Number(payload.afterId);
+      if (!Number.isSafeInteger(afterId) || afterId < 0) {
+        return reply({ ok: false, error: 'Invalid message cursor' });
+      }
+
+      try {
+        const messages = await messageStore.getRoomMessagesAfter(room, afterId);
+        reply({ ok: true, messages });
+      } catch (error) {
+        console.error('Failed to sync room messages:', error);
+        reply({ ok: false, error: 'Could not sync chat messages. Please try again.' });
       }
     });
 

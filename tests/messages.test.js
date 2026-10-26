@@ -25,4 +25,14 @@ describe('MessageStore', () => {
     expect(history.map((message) => message.text)).toEqual(['first', 'second']);
     expect(history[0]).toMatchObject({ id: 1, from: 'alice', timestamp: 1000 });
   });
+
+  test('queries only group messages newer than the reconnect cursor', async () => {
+    const rows = [{ id: 9, type: 'chat', room: 'general', sender: 'bob', text: 'missed', timestamp: 9000 }];
+    const execute = jest.fn().mockResolvedValue([rows]);
+    const store = new MessageStore({ execute });
+    const messages = await store.getRoomMessagesAfter('general', 8);
+    expect(execute.mock.calls[0][0]).toContain("WHERE room = ? AND type = ? AND id > ? ORDER BY id ASC");
+    expect(execute.mock.calls[0][1]).toEqual(['general', 'chat', 8]);
+    expect(messages).toMatchObject([{ id: 9, room: 'general', from: 'bob', text: 'missed' }]);
+  });
 });

@@ -23,6 +23,11 @@ class TestMessageStore {
       .slice(-limit)
       .map(({ id, type, room: messageRoom, timestamp, from, text }) => ({ id, type, room: messageRoom, timestamp, from, text }));
   }
+  async getRoomMessagesAfter(room, afterId) {
+    return this.messages
+      .filter((message) => message.type === 'chat' && message.room === room && message.id > afterId)
+      .map(({ id, type, room: messageRoom, timestamp, from, text }) => ({ id, type, room: messageRoom, timestamp, from, text }));
+  }
 }
 
 const connect = () => {
@@ -44,14 +49,15 @@ const onceType = (c, type) =>
   });
 const join = (c, username, room) => emit(c, 'join', { username, room });
 
-const getJson = (path) =>
+const getJsonAt = (baseUrl, path) =>
   new Promise((resolve, reject) => {
-    http.get(url + path, (res) => {
+    http.get(baseUrl + path, (res) => {
       let body = '';
       res.on('data', (d) => (body += d));
       res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(body) }));
     }).on('error', reject);
   });
+const getJson = (path) => getJsonAt(url, path);
 
 beforeEach((done) => {
   messageStore = new TestMessageStore();
@@ -123,6 +129,19 @@ describe('join', () => {
 });
 
 describe('rooms', () => {
+  test('development controls are enabled only when the server is in development mode', async () => {
+    expect((await getJson('/api/config')).body).toEqual({ developmentMode: false });
+
+    const development = createServer({ messageStore: new TestMessageStore(), developmentMode: true });
+    await new Promise((resolve) => development.httpServer.listen(0, resolve));
+    const developmentUrl = `http://localhost:${development.httpServer.address().port}`;
+    try {
+      expect((await getJsonAt(developmentUrl, '/api/config')).body).toEqual({ developmentMode: true });
+    } finally {
+      await new Promise((resolve) => development.io.close(resolve));
+    }
+  });
+
   test('GET /api/rooms lists rooms with user counts', async () => {
     const a = await connect();
     const b = await connect();
@@ -228,6 +247,45 @@ describe('history', () => {
     const b = await connect();
     const res = await join(b, 'bob', 'general');
     expect(res.history.map((m) => m.text)).toEqual(['msg 3', 'msg 4', 'msg 5', 'msg 6', 'msg 7']);
+  });
+
+  test('syncs only missing room messages after reconnect, excluding private messages', async () => {
+    const alice = await connect();
+    const bob = await connect();
+    const carol = await connect();
+    await join(alice, 'alice', 'general');
+    await join(bob, 'bob', 'general');
+    await join(carol, 'carol', 'general');
+
+    const firstMessage = onceType(alice, 'chat');
+    await emit(bob, 'message', { text: 'already received' });
+    const first = await firstMessage;
+    const usersAfterDisconnect = once(bob, 'users:update');
+    alice.disconnect();
+    expect(await usersAfterDisconnect).toEqual(['bob', 'carol']);
+
+    await new Promise((resolve) => setTimeout(resolve, 1050));
+    await emit(bob, 'message', { text: '/pm carol private while alice is away' });
+    await emit(bob, 'message', { text: 'missed one' });
+    await emit(bob, 'message', { text: 'missed two' });
+
+    const reconnected = once(alice, 'connect');
+    alice.connect();
+    await reconnected;
+    const joined = await join(alice, 'alice', 'general');
+    expect(joined.ok).toBe(true);
+    const sync = await emit(alice, 'messages:sync', { afterId: first.id });
+
+    expect(sync.ok).toBe(true);
+    expect(sync.messages.map((message) => message.text)).toEqual(['missed one', 'missed two']);
+    expect(sync.messages.every((message) => message.type === 'chat')).toBe(true);
+  });
+
+  test('rejects message sync requests without joining or with an invalid cursor', async () => {
+    const c = await connect();
+    expect(await emit(c, 'messages:sync', { afterId: 0 })).toEqual({ ok: false, error: 'Join a room first' });
+    await join(c, 'alice', 'general');
+    expect(await emit(c, 'messages:sync', { afterId: -1 })).toEqual({ ok: false, error: 'Invalid message cursor' });
   });
 });
 
