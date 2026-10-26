@@ -7,15 +7,33 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <!-- Authentication -->
+  <section id="auth-screen" class="screen">
+    <div class="card auth-card">
+      <h1 class="logo">realtime-chat</h1>
+      <p class="muted">Sign in or create an account to chat.</p>
+      <form id="login-form" class="auth-form" autocomplete="on">
+        <label>Username<input name="username" maxlength="20" autocomplete="username" required /></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required /></label>
+        <button type="submit" class="btn">Sign in</button>
+        <button id="show-register" type="button" class="btn ghost">Create account</button>
+      </form>
+      <form id="register-form" class="auth-form" autocomplete="on" hidden>
+        <label>Username<input name="username" maxlength="20" autocomplete="username" required /></label>
+        <label>Password<input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
+        <p class="muted auth-hint">Username: 2–20 letters, numbers, _ or -. Password: at least 8 characters, at most 72 UTF-8 bytes.</p>
+        <button type="submit" class="btn">Register</button>
+        <button id="show-login" type="button" class="btn ghost">Back to sign in</button>
+      </form>
+      <p id="auth-error" class="error" role="alert"></p>
+    </div>
+  </section>
+
   <!-- Join screen -->
-  <section id="join-screen" class="screen">
+  <section id="join-screen" class="screen hidden">
     <form id="join-form" class="card" autocomplete="off">
       <h1 class="logo">realtime-chat</h1>
-      <p class="muted">Pick a name and a room to get started.</p>
-      <label>
-        Username
-        <input id="username" name="username" maxlength="20" placeholder="e.g. alice" required />
-      </label>
+      <p class="muted">Signed in as <strong id="account-name"></strong>. Choose a room.</p>
       <label>
         Room
         <input id="room" name="room" maxlength="20" placeholder="e.g. general" required list="room-options" />
@@ -44,6 +62,7 @@
       </div>
       <div class="sidebar-footer">
         <span id="me" class="me"></span>
+        <button id="logout-btn" class="btn ghost" type="button">Logout</button>
         <button id="leave-btn" class="btn ghost">Leave</button>
       </div>
     </aside>

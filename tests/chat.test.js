@@ -3,12 +3,15 @@
 const http = require('http');
 const { io: Client } = require('socket.io-client');
 const { createServer } = require('../src/server');
+const { TestUserStore, createTestSession } = require('./helpers');
 
 let httpServer;
 let io;
 let url;
 const clients = [];
 let messageStore;
+let userStore;
+let sessionMiddleware;
 
 class TestMessageStore {
   constructor() { this.messages = []; this.nextId = 1; }
@@ -30,10 +33,36 @@ class TestMessageStore {
   }
 }
 
-const connect = () => {
-  const c = Client(url, { forceNew: true, transports: ['websocket'] });
+const apiRequest = (path, payload) =>
+  new Promise((resolve, reject) => {
+    const request = http.request(url + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: url }
+    }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(body), cookie: res.headers['set-cookie']?.[0]?.split(';')[0] }));
+    });
+    request.on('error', reject);
+    request.end(JSON.stringify(payload));
+  });
+
+const openSocket = async (cookie) => {
+  const c = Client(url, { forceNew: true, transports: ['websocket'], extraHeaders: { Cookie: cookie } });
   clients.push(c);
   return new Promise((resolve) => c.on('connect', () => resolve(c)));
+};
+
+const connect = async (username) => {
+  const result = await apiRequest('/api/auth/register', { username, password: 'TestPassword123!' });
+  if (result.status !== 201) throw new Error(`Test account registration failed for ${username}: ${result.body.error}`);
+  return openSocket(result.cookie);
+};
+
+const connectExisting = async (username) => {
+  const result = await apiRequest('/api/auth/login', { username, password: 'TestPassword123!' });
+  if (result.status !== 200) throw new Error(`Test account login failed for ${username}: ${result.body.error}`);
+  return openSocket(result.cookie);
 };
 
 const emit = (c, event, payload) => new Promise((resolve) => c.emit(event, payload, resolve));
@@ -61,7 +90,12 @@ const getJson = (path) => getJsonAt(url, path);
 
 beforeEach((done) => {
   messageStore = new TestMessageStore();
-  ({ httpServer, io } = createServer({ messageStore, historyLimit: 5, rateLimit: { limit: 3, windowMs: 1000 } }));
+  userStore = new TestUserStore();
+  ({ sessionMiddleware } = createTestSession());
+  ({ httpServer, io } = createServer({
+    messageStore, userStore, sessionMiddleware, historyLimit: 5,
+    rateLimit: { limit: 3, windowMs: 1000 }
+  }));
   httpServer.listen(0, () => {
     url = `http://localhost:${httpServer.address().port}`;
     done();
@@ -75,21 +109,19 @@ afterEach((done) => {
 
 describe('join', () => {
   test('accepts a valid username and room and returns empty history', async () => {
-    const c = await connect();
+    const c = await connect('alice');
     const res = await join(c, 'alice', 'general');
     expect(res).toEqual({ ok: true, username: 'alice', room: 'general', history: [] });
   });
 
   test('rejects invalid usernames and rooms', async () => {
-    const c = await connect();
-    expect((await join(c, 'a', 'general')).ok).toBe(false);
-    expect((await join(c, 'bad name!', 'general')).ok).toBe(false);
-    expect((await join(c, 'alice', '')).ok).toBe(false);
-    expect((await join(c, undefined, 'general')).error).toMatch(/Username/);
+    const c = await connect('alice');
+    expect((await join(c, 'forged', 'bad room')).ok).toBe(false);
+    expect(await join(c, 'forged', 'general')).toMatchObject({ ok: true, username: 'alice' });
   });
 
   test('returns a useful error when room history cannot be loaded', async () => {
-    const c = await connect();
+    const c = await connect('alice');
     const logError = jest.spyOn(console, 'error').mockImplementation(() => {});
     messageStore.getRoomHistory = async () => { throw new Error('database unavailable'); };
     const res = await join(c, 'alice', 'general');
@@ -99,25 +131,25 @@ describe('join', () => {
   });
 
   test('rejects a duplicate username in the same room (case-insensitive)', async () => {
-    const a = await connect();
-    const b = await connect();
+    const a = await connect('alice');
+    const b = await connectExisting('alice');
     await join(a, 'alice', 'general');
     const res = await join(b, 'ALICE', 'general');
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/already taken/);
+    expect(res.error).toMatch(/already in this room/);
   });
 
   test('allows the same username in different rooms', async () => {
-    const a = await connect();
-    const b = await connect();
+    const a = await connect('alice');
+    const b = await connectExisting('alice');
     await join(a, 'alice', 'room-1');
     expect((await join(b, 'alice', 'room-2')).ok).toBe(true);
   });
 
   test('sends system messages on join and leave to other members', async () => {
-    const a = await connect();
+    const a = await connect('alice');
     await join(a, 'alice', 'general');
-    const b = await connect();
+    const b = await connect('bob');
     const joined = once(a, 'message');
     await join(b, 'bob', 'general');
     expect(await joined).toMatchObject({ type: 'system', text: 'bob joined the room' });
@@ -132,7 +164,10 @@ describe('rooms', () => {
   test('development controls are enabled only when the server is in development mode', async () => {
     expect((await getJson('/api/config')).body).toEqual({ developmentMode: false });
 
-    const development = createServer({ messageStore: new TestMessageStore(), developmentMode: true });
+    const development = createServer({
+      messageStore: new TestMessageStore(), userStore: new TestUserStore(), sessionMiddleware,
+      developmentMode: true
+    });
     await new Promise((resolve) => development.httpServer.listen(0, resolve));
     const developmentUrl = `http://localhost:${development.httpServer.address().port}`;
     try {
@@ -143,8 +178,8 @@ describe('rooms', () => {
   });
 
   test('GET /api/rooms lists rooms with user counts', async () => {
-    const a = await connect();
-    const b = await connect();
+    const a = await connect('alice');
+    const b = await connect('bob');
     await join(a, 'alice', 'general');
     await join(b, 'bob', 'general');
     const { status, body } = await getJson('/api/rooms');
@@ -153,8 +188,8 @@ describe('rooms', () => {
   });
 
   test('broadcasts rooms:update when users join and leave', async () => {
-    const a = await connect();
-    const b = await connect();
+    const a = await connect('alice');
+    const b = await connect('bob');
     const update = once(a, 'rooms:update');
     await join(b, 'bob', 'lobby');
     expect(await update).toEqual([{ name: 'lobby', users: 1 }]);
@@ -165,8 +200,8 @@ describe('rooms', () => {
   });
 
   test('sends users:update with the sorted member list', async () => {
-    const a = await connect();
-    const b = await connect();
+    const a = await connect('zed');
+    const b = await connect('amy');
     await join(a, 'zed', 'general');
     const update = once(a, 'users:update');
     await join(b, 'amy', 'general');
@@ -176,9 +211,9 @@ describe('rooms', () => {
 
 describe('messaging', () => {
   test('broadcasts chat messages with sender and timestamp to the room only', async () => {
-    const a = await connect();
-    const b = await connect();
-    const other = await connect();
+    const a = await connect('alice');
+    const b = await connect('bob');
+    const other = await connect('carol');
     await join(a, 'alice', 'general');
     await join(b, 'bob', 'general');
     await join(other, 'carol', 'elsewhere');
@@ -197,7 +232,7 @@ describe('messaging', () => {
   });
 
   test('escapes HTML and enforces length limits and non-empty text', async () => {
-    const a = await connect();
+    const a = await connect('alice');
     await join(a, 'alice', 'general');
     const received = once(a, 'message');
     await emit(a, 'message', { text: '<b>hi</b>' });
@@ -209,13 +244,13 @@ describe('messaging', () => {
   });
 
   test('rejects messages before joining a room', async () => {
-    const a = await connect();
+    const a = await connect('alice');
     const res = await emit(a, 'message', { text: 'hi' });
     expect(res).toEqual({ ok: false, error: 'Join a room first' });
   });
 
   test('rate limits messages per socket', async () => {
-    const a = await connect();
+    const a = await connect('alice');
     await join(a, 'alice', 'general');
     const results = [];
     for (let i = 0; i < 4; i++) results.push(await emit(a, 'message', { text: `m${i}` }));
@@ -227,32 +262,32 @@ describe('messaging', () => {
 
 describe('history', () => {
   test('sends the most recent messages to a newly joined user', async () => {
-    const a = await connect();
+    const a = await connect('alice');
     await join(a, 'alice', 'general');
     for (let i = 1; i <= 3; i++) {
       await emit(a, 'message', { text: `msg ${i}` });
     }
-    const b = await connect();
+    const b = await connect('bob');
     const res = await join(b, 'bob', 'general');
     expect(res.history.map((m) => m.text)).toEqual(['msg 1', 'msg 2', 'msg 3']);
   });
 
   test('caps history at the configured limit', async () => {
-    const a = await connect();
+    const a = await connect('alice');
     await join(a, 'alice', 'general');
     for (let i = 1; i <= 7; i++) {
       await emit(a, 'message', { text: `msg ${i}` });
       if (i % 3 === 0) await new Promise((r) => setTimeout(r, 1050));
     }
-    const b = await connect();
+    const b = await connect('bob');
     const res = await join(b, 'bob', 'general');
     expect(res.history.map((m) => m.text)).toEqual(['msg 3', 'msg 4', 'msg 5', 'msg 6', 'msg 7']);
   });
 
   test('syncs only missing room messages after reconnect, excluding private messages', async () => {
-    const alice = await connect();
-    const bob = await connect();
-    const carol = await connect();
+    const alice = await connect('alice');
+    const bob = await connect('bob');
+    const carol = await connect('carol');
     await join(alice, 'alice', 'general');
     await join(bob, 'bob', 'general');
     await join(carol, 'carol', 'general');
@@ -282,7 +317,7 @@ describe('history', () => {
   });
 
   test('rejects message sync requests without joining or with an invalid cursor', async () => {
-    const c = await connect();
+    const c = await connect('alice');
     expect(await emit(c, 'messages:sync', { afterId: 0 })).toEqual({ ok: false, error: 'Join a room first' });
     await join(c, 'alice', 'general');
     expect(await emit(c, 'messages:sync', { afterId: -1 })).toEqual({ ok: false, error: 'Invalid message cursor' });
@@ -291,8 +326,8 @@ describe('history', () => {
 
 describe('typing', () => {
   test('relays typing state to other room members but not the sender', async () => {
-    const a = await connect();
-    const b = await connect();
+    const a = await connect('alice');
+    const b = await connect('bob');
     await join(a, 'alice', 'general');
     await join(b, 'bob', 'general');
 
@@ -311,9 +346,9 @@ describe('typing', () => {
 
 describe('private messages', () => {
   test('/pm delivers only to the sender and the target', async () => {
-    const a = await connect();
-    const b = await connect();
-    const c = await connect();
+    const a = await connect('alice');
+    const b = await connect('bob');
+    const c = await connect('carol');
     await join(a, 'alice', 'general');
     await join(b, 'bob', 'general');
     await join(c, 'carol', 'general');
@@ -333,29 +368,29 @@ describe('private messages', () => {
   });
 
   test('/pm reports unknown users and self-messaging', async () => {
-    const a = await connect();
+    const a = await connect('alice');
     await join(a, 'alice', 'general');
     expect((await emit(a, 'message', { text: '/pm nobody hi' })).error).toMatch(/not in this room/);
     expect((await emit(a, 'message', { text: '/pm alice hi' })).error).toMatch(/yourself/);
   });
 
   test('private messages are not stored in room history', async () => {
-    const a = await connect();
-    const b = await connect();
+    const a = await connect('alice');
+    const b = await connect('bob');
     await join(a, 'alice', 'general');
     await join(b, 'bob', 'general');
     await emit(a, 'message', { text: '/pm bob psst' });
     await emit(a, 'message', { text: 'public' });
     expect(messageStore.messages.map((m) => m.type)).toEqual(['private', 'chat']);
     expect(messageStore.messages[0]).toMatchObject({ from: 'alice', to: 'bob', text: 'psst' });
-    const c = await connect();
+    const c = await connect('carol');
     const res = await join(c, 'carol', 'general');
     expect(res.history.map((m) => m.text)).toEqual(['public']);
   });
 
   test('does not broadcast or acknowledge a message when persistence fails', async () => {
-    const a = await connect();
-    const b = await connect();
+    const a = await connect('alice');
+    const b = await connect('bob');
     await join(a, 'alice', 'general');
     await join(b, 'bob', 'general');
     messageStore.save = async () => { throw new Error('database unavailable'); };

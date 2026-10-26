@@ -1,6 +1,6 @@
 # realtime-chat — Project Overview
 
-A self-hosted, room-based chat server in ~250 lines of Node.js, with a dependency-free browser
+A self-hosted, authenticated room chat server with a dependency-free browser
 client and an integration test suite that drives the real server over real sockets. This document
 explains *why* it exists, *how* it is built, and *what was learned* building it. For setup and the
 event reference see [README.md](README.md).
@@ -19,8 +19,9 @@ real time, and the usual answers are a poor fit:
   `innerHTML`, allow anyone to claim any name, and let a single client flood the room. They are
   trivially exploitable via XSS and spam the moment a second person connects.
 
-realtime-chat targets that gap: a server you can `npm start` on any box, that needs no accounts or
-database, pushes messages instead of polling, and treats every byte from a client as untrusted.
+realtime-chat targets that gap: a server you can run locally, with MySQL-backed accounts, sessions
+and message history. Socket.IO pushes messages instead of polling, while the server treats every
+client-supplied value as untrusted.
 
 ## 2. Purpose & Goals
 
@@ -30,11 +31,11 @@ Success criteria:
 | Goal | How it is met |
 |------|---------------|
 | Simple local setup | Express, Socket.IO and MySQL; settings are read from `.env` |
-| Lightweight identity | Identity is a username scoped to a room; online membership remains in `RoomStore` in memory |
+| Authenticated identity | Usernames are unique accounts; Socket.IO identity comes from the server session |
 | Push, not poll | Socket.IO transports (WebSocket with long-polling fallback) |
 | Safe by default | Server-side `escapeHtml`, 500-char cap, name regex, 5 msg/s per socket |
 | Durable room history | Last 100 room messages are loaded from MySQL in the `join` acknowledgement |
-| Verifiable behaviour | 18 Jest integration tests against a real listening server |
+| Verifiable behaviour | Jest integration tests against a real listening server and isolated test stores |
 
 ## 3. Who It's For / Use Cases
 
@@ -72,10 +73,10 @@ with custom limits and listen on port `0`.
 
 ### Event flow
 
-**join** — client emits `join {username, room}` with an ack callback. The server runs
-`validateName` on both fields (`/^[A-Za-z0-9_-]{2,20}$/`), rejects a socket that already joined,
-then checks `rooms.hasUsername()` case-insensitively. On success it stores `username`/`room` on
-`socket.data`, calls `rooms.join()` and `socket.join()`, acks with
+**join** — client emits `join {room}` with an ack callback. Socket.IO has already authenticated
+the session. Username and account ID come from that session, never from the join payload. The server
+validates the room, rejects a socket or account already in the room, stores the authenticated identity
+on `socket.data`, calls `rooms.join()` and `socket.join()`, acks with
 `{ ok, username, room, history }`, and fans out three things: a `system` message to *other* members
 (`socket.to(room)`), `users:update` to the room, and `rooms:update` to everyone.
 
@@ -91,7 +92,8 @@ linger.
 
 **private message** — any text matching `PM_RE = /^\/pm\s+(\S+)\s+([\s\S]+)$/` goes to
 `sendPrivate()`. It resolves the target with `rooms.findSocketId()` (case-insensitive), refuses
-unknown users and self-messages, saves the message to MySQL, then emits a `type: 'private'` message
+unknown users and self-messages, resolves the live target to an account ID, saves the message to
+MySQL, then emits a `type: 'private'` message
 to exactly two sockets: `io.to(targetId)` and the sender. Private messages are excluded from room
 history queries.
 
@@ -101,7 +103,7 @@ leave notice, a typing reset, `users:update` and `rooms:update` follow.
 ### In-memory state model (`src/rooms.js`)
 
 ```
-RoomStore.rooms : Map<roomName, { users: Map<socketId, username> }>
+RoomStore.rooms : Map<roomName, { users: Map<socketId, { id, username }> }>
 ```
 
 Keying members by socket id makes disconnect cleanup O(1) and makes "which socket is bob?" a
@@ -148,32 +150,25 @@ queries in `src/messages.js`.
 | Layer | Choice | Why |
 |-------|--------|-----|
 | Runtime | Node.js ≥ 18 | Single language across server, client and tests; `node --watch` for dev |
-| HTTP | Express 4 | Static file serving and two JSON endpoints with minimal ceremony |
+| HTTP | Express 4 | Static files, authentication APIs and room/health endpoints |
 | Real-time | Socket.IO 4 | Rooms, acks, auto-reconnect and transport fallback out of the box; a raw `ws` server would need all four re-implemented |
 | Client | Vanilla HTML/CSS/JS | No build step; the whole UI is three files a reviewer can read in minutes |
 | State | MySQL + in-memory online membership | Persistent messages with low-latency presence and socket lookups |
-| Tests | Jest + `socket.io-client` | Exercises the same wire protocol browsers use, not mocked handlers |
+| Authentication | `bcryptjs`, `express-session`, MySQL session store | Bcrypt password hashes and server-side sessions with HttpOnly cookies |
+| Tests | Jest + `socket.io-client` | Exercises APIs and the same Socket.IO wire protocol browsers use |
 
 ## 6. Testing & Quality
 
-`tests/chat.test.js` contains Socket.IO integration tests using an injected fake message store, and
-`tests/messages.test.js` verifies parameterised query construction and row mapping. Together the suite
-contains **25 tests**. The chat suite calls `createServer({ messageStore, historyLimit: 5, rateLimit: { limit: 3, windowMs: 1000 } })` and listens on
+`tests/auth.test.js` covers account APIs, session cookies and authenticated sockets. `tests/chat.test.js`
+uses an injected fake message store, and `tests/messages.test.js` verifies parameterised query
+construction and row mapping. Together the suite contains **34 tests**. Tests use isolated memory
+session/user stores and do not run the MySQL migration. The chat suite calls `createServer({ messageStore, userStore, sessionMiddleware })` and listens on
 port `0`; each test connects real `socket.io-client` instances to the assigned port, so routing,
 acks and room scoping are verified over an actual socket rather than through mocks.
 
-Coverage by area:
-
-- **join** (5) — valid join returns empty history; invalid names rejected; duplicate name in same
-  room rejected case-insensitively; same name allowed across rooms; system notices on join/leave
-  reach other members only.
-- **rooms** (3) — `GET /api/rooms` counts; `rooms:update` on join and leave; sorted `users:update`.
-- **messaging** (4) — broadcast scoped to the room with sender/timestamp; HTML escaping, empty,
-  over-length and non-string payloads; rejection before join; rate limit trips on the 4th message.
-- **history** (2) — newcomers receive prior messages; history capped at the configured limit.
-- **typing** (1) — relayed to others, never echoed to the sender.
-- **private messages** — delivered to sender and target only, saved as private rows, and excluded
-  from room history; unknown-user and self-target errors are covered.
+Coverage includes account registration, password hashing, login/logout, session cookies, origin
+checks, unauthenticated Socket.IO rejection, spoofed identity payloads, room membership, chat and PM
+routing, persistence errors, reconnect synchronization, and parameterised message queries.
 
 Run with `npm test` (`jest --runInBand --forceExit`; tests run serially because they share one
 server instance).

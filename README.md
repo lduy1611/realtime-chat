@@ -3,13 +3,14 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![Socket.IO](https://img.shields.io/badge/socket.io-4.x-010101?logo=socket.io)](https://socket.io)
 [![Express](https://img.shields.io/badge/express-4.x-000000?logo=express)](https://expressjs.com)
-[![Tests](https://img.shields.io/badge/tests-25%20passing-4cd28a)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-34%20passing-4cd28a)](#running-tests)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A real-time chat application with rooms, built on **Express** and **Socket.IO** with a dependency-free
-vanilla HTML/CSS/JS client. Users join a room under a unique username, see who is online, watch typing
-indicators, receive recent history on join, and send private messages with a `/pm` command. The server
-escapes HTML, enforces length limits and rate-limits each socket.
+A real-time chat application with rooms, built on **Express**, **Socket.IO** and **MySQL**, with a
+dependency-free vanilla HTML/CSS/JS client. Registered users join rooms, see who is online, watch
+typing indicators, receive recent history on join, and send private messages with a `/pm` command.
+The server stores bcrypt password hashes and HttpOnly MySQL-backed sessions, escapes HTML, enforces
+length limits and rate-limits chat and authentication attempts.
 
 📄 See [PROJECT.md](PROJECT.md) for the problem statement, design and implementation walkthrough.
 
@@ -70,9 +71,10 @@ Copy-Item .env.example .env
 ### MySQL setup on Windows
 
 1. Install and start MySQL Server. If it is already installed, open the Windows Services app and start the MySQL service if needed.
-2. Open MySQL Workbench and connect to your local MySQL Server.
-3. Open `sql/init.sql` in Workbench and execute it. It creates the `realtime_chat` database and UTF-8 `messages` table if they do not already exist; it does not drop existing data.
-4. Edit the project `.env` file with your MySQL host, port, username and password. Do not commit `.env`.
+2. Open MySQL Workbench and connect to your local MySQL Server. Before any schema changes, select **Server → Data Export**, select `realtime_chat`, choose **Dump Structure and Data** and **Export to Self-Contained File**, then click **Start Export**. Keep the resulting backup outside the project.
+3. Open `sql/init.sql` in Workbench and execute it if the database or original `messages` table has not been created yet.
+4. Review `sql/migrations/001_accounts_sessions.sql`, then open and execute it in Workbench. This additive migration creates only `users` and `sessions`; it does not alter or delete rows or columns in `messages`. The app performs read-only table checks and does not run migrations at startup.
+5. Edit the project `.env` file with your MySQL host, port, username, password, and a new session secret. Do not commit `.env`.
 
 Example `.env` for a local server:
 
@@ -83,9 +85,12 @@ DB_PORT=3306
 DB_USER=root
 DB_PASSWORD=your_actual_mysql_password
 DB_NAME=realtime_chat
+SESSION_SECRET=
 ```
 
-Start the app with `npm start`. It verifies the MySQL connection before listening on port 3000. If MySQL is unavailable, startup fails with a connection error. A failed history read prevents joining, and a failed message write prevents broadcast and returns an error to the sender. `npm test` uses a fake message store and does not require MySQL.
+Generate a session secret locally in PowerShell with `node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"` and paste the output into `.env`. Never paste the generated value into source code or commit it. For localhost over HTTP the session cookie is HttpOnly and SameSite=Lax without Secure; production mode requires HTTPS for Secure cookies.
+
+Start the app with `npm start`. It checks MySQL and the `users`/`sessions` tables before listening on port 3000. If the reviewed migration has not been run, startup fails without changing the database. A failed history read prevents joining, and a failed message write prevents broadcast and returns an error to the sender. `npm test` uses fake stores and does not require MySQL.
 
 ## Usage
 
@@ -95,7 +100,7 @@ PORT=8080 npm start  # custom port
 npm run dev          # restarts on file changes (node --watch)
 ```
 
-Open the URL in two or more browser tabs, pick different usernames and the same room, and start chatting.
+Open the URL in two or more browser tabs, register or sign in with separate accounts, choose the same room, and start chatting.
 Type `/pm bob hello` to send a private message to `bob`.
 
 ### Demo Socket.IO reconnect on one laptop
@@ -121,6 +126,10 @@ when `NODE_ENV=development`; they stay hidden in production and other modes.
 | GET    | `/`           | Chat client                                  |
 | GET    | `/api/rooms`  | `[{ "name": "general", "users": 3 }, ...]`   |
 | GET    | `/api/health` | `{ "status": "ok", "uptime": 12.3 }`         |
+| POST   | `/api/auth/register` | Create an account and sign in                 |
+| POST   | `/api/auth/login` | Sign in and rotate the session                   |
+| POST   | `/api/auth/logout` | Destroy the session and its active sockets     |
+| GET    | `/api/auth/me` | Return the current account                       |
 
 ## Socket event reference
 
@@ -128,7 +137,7 @@ when `NODE_ENV=development`; they stay hidden in production and other modes.
 
 | Event     | Payload                        | Ack response                                                   |
 |-----------|--------------------------------|----------------------------------------------------------------|
-| `join`    | `{ username, room }`           | `{ ok: true, username, room, history: Message[] }` or `{ ok: false, error }` |
+| `join`    | `{ room }`                      | `{ ok: true, username, room, history: Message[] }` or `{ ok: false, error }` |
 | `message` | `{ text }`                     | `{ ok: true, id }` or `{ ok: false, error }`                   |
 | `typing`  | `boolean`                      | none                                                           |
 
@@ -165,9 +174,9 @@ Integration tests spin up the real server on a random port and drive it with `so
 npm test
 ```
 
-25 tests cover joining and validation, room list API and live updates, broadcast scoping, sanitisation,
-rate limiting, history delivery and capping, typing relay, private-message routing, persistence errors
-and reconnect synchronization.
+34 tests cover authentication, cookie sessions, invalid Socket.IO connections, identity spoofing,
+joining and validation, room updates, message delivery, history, private messaging, persistence errors
+and reconnect synchronization. They use in-memory test stores and do not run the MySQL migration.
 
 ## Project structure
 
@@ -176,6 +185,8 @@ realtime-chat/
 ├── src/
 │   ├── index.js        # entry point, reads PORT
 │   ├── server.js       # express + socket.io wiring and event handlers
+│   ├── auth.js         # session middleware and authentication APIs
+│   ├── users.js        # MySQL user store
 │   ├── rooms.js        # in-memory online room membership
 │   ├── db.js           # dotenv config and MySQL pool
 │   ├── messages.js     # parameterised message persistence and history queries
@@ -186,10 +197,13 @@ realtime-chat/
 │   ├── style.css       # dark, responsive theme
 │   └── app.js          # client logic
 ├── tests/
+│   ├── auth.test.js    # authentication and Socket.IO authorization tests
 │   ├── chat.test.js    # Socket.IO integration tests using a fake store
 │   └── messages.test.js # message store query tests
 ├── sql/
-│   └── init.sql        # database and utf8mb4 table setup
+│   ├── init.sql        # original database and messages table setup
+│   └── migrations/
+│       └── 001_accounts_sessions.sql # additive users and sessions tables
 ├── .env.example
 ├── package.json
 ├── LICENSE

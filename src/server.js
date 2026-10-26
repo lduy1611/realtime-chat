@@ -7,6 +7,7 @@ const { Server } = require('socket.io');
 const { RoomStore } = require('./rooms');
 const { RateLimiter } = require('./rateLimit');
 const { validateName, sanitizeMessage } = require('./validate');
+const { installAuthRoutes } = require('./auth');
 
 const PM_RE = /^\/pm\s+(\S+)\s+([\s\S]+)$/;
 let nextMessageId = 1;
@@ -25,10 +26,17 @@ function createServer(options = {}) {
   const io = new Server(httpServer);
   const rooms = new RoomStore({ historyLimit: options.historyLimit });
   const messageStore = options.messageStore;
+  const userStore = options.userStore;
+  const sessionMiddleware = options.sessionMiddleware;
   const developmentMode = options.developmentMode ?? process.env.NODE_ENV === 'development';
-  if (!messageStore) throw new Error('createServer requires a messageStore');
+  if (!messageStore || !userStore || !sessionMiddleware) {
+    throw new Error('createServer requires messageStore, userStore, and sessionMiddleware');
+  }
 
+  app.use(express.json({ limit: '10kb' }));
+  app.use(sessionMiddleware);
   app.use(express.static(path.join(__dirname, '..', 'public')));
+  installAuthRoutes(app, { userStore, io });
 
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', uptime: process.uptime() });
@@ -48,16 +56,27 @@ function createServer(options = {}) {
 
   const rateLimit = { limit: 5, windowMs: 1000, ...(options.rateLimit || {}) };
 
+  io.engine.use(sessionMiddleware);
+  io.use((socket, next) => {
+    const user = socket.request.session && socket.request.session.user;
+    if (!user || !user.id || !user.username) return next(new Error('Authentication required'));
+    socket.data.userId = user.id;
+    socket.data.username = user.username;
+    socket.data.sessionId = socket.request.sessionID;
+    next();
+  });
+
   async function sendPrivate(socket, target, body, reply) {
     const { room, username } = socket.data;
     const { error, text } = sanitizeMessage(body);
     if (error) return reply({ ok: false, error });
 
-    const targetId = rooms.findSocketId(room, target);
-    if (!targetId) return reply({ ok: false, error: `User "${target}" is not in this room` });
+    const targetUser = rooms.findUser(room, target);
+    if (!targetUser) return reply({ ok: false, error: `User "${target}" is not in this room` });
+    const targetId = rooms.findSocketId(room, targetUser.id);
     if (targetId === socket.id) return reply({ ok: false, error: 'You cannot message yourself' });
 
-    const recipient = rooms.users(room).find((u) => u.toLowerCase() === target.toLowerCase());
+    const recipient = targetUser.username;
     try {
       const saved = await messageStore.save({ type: 'private', room, from: username, to: recipient, text });
       const message = { id: saved.id, type: 'private', room, timestamp: saved.timestamp, from: username, to: recipient, text };
@@ -72,26 +91,26 @@ function createServer(options = {}) {
 
   io.on('connection', (socket) => {
     socket.data.limiter = new RateLimiter(rateLimit);
+    socket.join(`session:${socket.data.sessionId}`);
     socket.emit('rooms:update', rooms.summary());
 
     socket.on('join', async (payload, ack) => {
       const reply = typeof ack === 'function' ? ack : () => {};
-      const { username, room } = payload || {};
+      const { room } = payload || {};
 
-      const err = validateName(username, 'Username') || validateName(room, 'Room');
+      const err = validateName(room, 'Room');
       if (err) return reply({ ok: false, error: err });
       if (socket.data.room || socket.data.joining) return reply({ ok: false, error: 'Already joined a room' });
 
-      const name = username.trim();
       const roomName = room.trim();
-      if (rooms.hasUsername(roomName, name)) {
-        return reply({ ok: false, error: 'Username is already taken in this room' });
+      if (rooms.hasUser(roomName, socket.data.userId)) {
+        return reply({ ok: false, error: 'This account is already in this room' });
       }
 
+      const { username, userId } = socket.data;
       socket.data.joining = true;
-      socket.data.username = name;
       socket.data.room = roomName;
-      rooms.join(roomName, socket.id, name);
+      rooms.join(roomName, socket.id, { id: userId, username });
       socket.join(roomName);
 
       let history;
@@ -100,7 +119,6 @@ function createServer(options = {}) {
       } catch (error) {
         rooms.leave(roomName, socket.id);
         socket.leave(roomName);
-        delete socket.data.username;
         delete socket.data.room;
         delete socket.data.joining;
         console.error('Failed to load room history:', error);
@@ -108,8 +126,8 @@ function createServer(options = {}) {
       }
       delete socket.data.joining;
 
-      reply({ ok: true, username: name, room: roomName, history });
-      socket.to(roomName).emit('message', makeMessage('system', roomName, { text: `${name} joined the room` }));
+      reply({ ok: true, username, room: roomName, history });
+      socket.to(roomName).emit('message', makeMessage('system', roomName, { text: `${username} joined the room` }));
       broadcastUsers(roomName);
       broadcastRooms();
     });

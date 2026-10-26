@@ -18,18 +18,14 @@ class RoomStore {
     return this.rooms.get(room);
   }
 
-  hasUsername(room, username) {
+  hasUser(room, userId) {
     const r = this.rooms.get(room);
     if (!r) return false;
-    const wanted = username.toLowerCase();
-    for (const u of r.users.values()) {
-      if (u.toLowerCase() === wanted) return true;
-    }
-    return false;
+    return [...r.users.values()].some((user) => String(user.id) === String(userId));
   }
 
-  join(room, socketId, username) {
-    this._get(room).users.set(socketId, username);
+  join(room, socketId, user) {
+    this._get(room).users.set(socketId, { id: user.id, username: user.username });
   }
 
   leave(room, socketId) {
@@ -41,15 +37,24 @@ class RoomStore {
 
   users(room) {
     const r = this.rooms.get(room);
-    return r ? [...r.users.values()].sort((a, b) => a.localeCompare(b)) : [];
+    return r ? [...r.users.values()].map((user) => user.username).sort((a, b) => a.localeCompare(b)) : [];
   }
 
-  findSocketId(room, username) {
+  findUser(room, username) {
     const r = this.rooms.get(room);
     if (!r) return null;
     const wanted = username.toLowerCase();
-    for (const [id, u] of r.users) {
-      if (u.toLowerCase() === wanted) return id;
+    for (const [socketId, user] of r.users) {
+      if (user.username.toLowerCase() === wanted) return { ...user, socketId };
+    }
+    return null;
+  }
+
+  findSocketId(room, userId) {
+    const r = this.rooms.get(room);
+    if (!r) return null;
+    for (const [socketId, user] of r.users) {
+      if (String(user.id) === String(userId)) return socketId;
     }
     return null;
   }

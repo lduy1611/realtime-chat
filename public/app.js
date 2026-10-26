@@ -2,13 +2,19 @@
 
 (() => {
   const $ = (id) => document.getElementById(id);
-  const socket = io();
+  const socket = io({ autoConnect: false });
 
   const el = {
+    authScreen: $('auth-screen'),
+    loginForm: $('login-form'),
+    registerForm: $('register-form'),
+    authError: $('auth-error'),
+    showRegister: $('show-register'),
+    showLogin: $('show-login'),
     joinScreen: $('join-screen'),
     chatScreen: $('chat-screen'),
     joinForm: $('join-form'),
-    username: $('username'),
+    accountName: $('account-name'),
     room: $('room'),
     joinError: $('join-error'),
     joinRooms: $('join-rooms'),
@@ -29,11 +35,12 @@
     sidebar: $('sidebar'),
     sidebarOpen: $('sidebar-open'),
     sidebarClose: $('sidebar-close'),
-    leaveBtn: $('leave-btn')
+    leaveBtn: $('leave-btn'),
+    logoutBtn: $('logout-btn')
   };
 
   const state = {
-    username: null, room: null, typing: new Set(), typingTimer: null, isTyping: false,
+    username: null, userId: null, room: null, typing: new Set(), typingTimer: null, isTyping: false,
     seenMessageIds: new Set(), lastMessageId: 0, developmentMode: false
   };
 
@@ -61,7 +68,7 @@
       chip.type = 'button';
       chip.className = 'chip';
       chip.textContent = '#' + r.name + ' (' + r.users + ')';
-      chip.addEventListener('click', () => { el.room.value = r.name; el.username.focus(); });
+      chip.addEventListener('click', () => { el.room.value = r.name; el.room.focus(); });
       el.joinRooms.appendChild(chip);
 
       const opt = document.createElement('option');
@@ -136,9 +143,8 @@
   el.joinForm.addEventListener('submit', (e) => {
     e.preventDefault();
     el.joinError.textContent = '';
-    const username = el.username.value.trim();
     const room = el.room.value.trim();
-    socket.emit('join', { username, room }, (res) => {
+    socket.emit('join', { room }, (res) => {
       if (!res.ok) { el.joinError.textContent = res.error; return; }
       state.username = res.username;
       state.room = res.room;
@@ -153,11 +159,18 @@
       el.joinScreen.classList.add('hidden');
       el.chatScreen.classList.remove('hidden');
       el.messageInput.focus();
-      try { localStorage.setItem('rc:username', res.username); } catch (_) { /* storage unavailable */ }
     });
   });
 
   el.leaveBtn.addEventListener('click', () => window.location.reload());
+  el.logoutBtn.addEventListener('click', async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+      socket.disconnect();
+      window.location.reload();
+    }
+  });
 
   el.simulateDisconnect.addEventListener('click', () => {
     if (!state.developmentMode || !socket.connected) return;
@@ -220,7 +233,7 @@
   }
 
   function rejoinAndSync() {
-    socket.emit('join', { username: state.username, room: state.room }, (res) => {
+    socket.emit('join', { room: state.room }, (res) => {
       if (!res.ok) {
         localNotice(res.error, 'error');
         return setConnectionStatus('offline');
@@ -257,6 +270,65 @@
   socket.io.on('reconnect_attempt', () => setConnectionStatus('reconnecting'));
   socket.io.on('reconnect_failed', () => setConnectionStatus('offline'));
 
+  async function enterAuthenticatedSession(user) {
+    state.userId = user.id;
+    state.username = user.username;
+    el.me.textContent = user.username;
+    el.accountName.textContent = user.username;
+    el.authScreen.classList.add('hidden');
+    el.joinScreen.classList.remove('hidden');
+    socket.connect();
+  }
+
+  async function submitAuth(form, endpoint) {
+    el.authError.textContent = '';
+    const values = Object.fromEntries(new FormData(form));
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(values)
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        el.authError.textContent = result.error || 'Authentication failed';
+        return;
+      }
+      await enterAuthenticatedSession(result.user);
+    } catch (_) {
+      el.authError.textContent = 'Could not reach the server. Try again.';
+    }
+  }
+
+  el.loginForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitAuth(el.loginForm, '/api/auth/login');
+  });
+  el.registerForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitAuth(el.registerForm, '/api/auth/register');
+  });
+  el.showRegister.addEventListener('click', () => {
+    el.loginForm.hidden = true;
+    el.registerForm.hidden = false;
+    el.authError.textContent = '';
+  });
+  el.showLogin.addEventListener('click', () => {
+    el.registerForm.hidden = true;
+    el.loginForm.hidden = false;
+    el.authError.textContent = '';
+  });
+
+  fetch('/api/auth/me')
+    .then(async (response) => {
+      if (!response.ok) return null;
+      return response.json();
+    })
+    .then((result) => {
+      if (result && result.authenticated) enterAuthenticatedSession(result.user);
+    })
+    .catch(() => { el.authError.textContent = 'Could not reach the server. Try again.'; });
+
   fetch('/api/config')
     .then((response) => response.ok ? response.json() : null)
     .then((config) => {
@@ -273,8 +345,4 @@
   el.sidebarOpen.addEventListener('click', () => el.sidebar.classList.add('open'));
   el.sidebarClose.addEventListener('click', () => el.sidebar.classList.remove('open'));
 
-  try {
-    const saved = localStorage.getItem('rc:username');
-    if (saved) el.username.value = saved;
-  } catch (_) { /* storage unavailable */ }
 })();
