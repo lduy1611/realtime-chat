@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>realtime-chat</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Join screen -->
+  <section id="join-screen" class="screen">
+    <form id="join-form" class="card" autocomplete="off">
+      <h1 class="logo">realtime-chat</h1>
+      <p class="muted">Pick a name and a room to get started.</p>
+      <label>
+        Username
+        <input id="username" name="username" maxlength="20" placeholder="e.g. alice" required />
+      </label>
+      <label>
+        Room
+        <input id="room" name="room" maxlength="20" placeholder="e.g. general" required list="room-options" />
+        <datalist id="room-options"></datalist>
+      </label>
+      <p id="join-error" class="error" role="alert"></p>
+      <button type="submit" class="btn">Join room</button>
+      <div id="join-rooms" class="room-chips"></div>
+    </form>
+  </section>
+
+  <!-- Chat screen -->
+  <section id="chat-screen" class="screen hidden">
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <span class="logo small">realtime-chat</span>
+        <button id="sidebar-close" class="icon-btn" aria-label="Close sidebar">&times;</button>
+      </div>
+      <div class="sidebar-section">
+        <h2>Rooms</h2>
+        <ul id="room-list" class="list"></ul>
+      </div>
+      <div class="sidebar-section">
+        <h2>Online in <span id="room-name-side"></span></h2>
+        <ul id="user-list" class="list"></ul>
+      </div>
+      <div class="sidebar-footer">
+        <span id="me" class="me"></span>
+        <button id="leave-btn" class="btn ghost">Leave</button>
+      </div>
+    </aside>
+
+    <main class="chat">
+      <header class="chat-header">
+        <button id="sidebar-open" class="icon-btn" aria-label="Open sidebar">&#9776;</button>
+        <h1>#<span id="room-name"></span></h1>
+        <span id="status" class="status online">online</span>
+      </header>
+      <ul id="messages" class="messages" aria-live="polite"></ul>
+      <p id="typing" class="typing"></p>
+      <form id="message-form" class="composer" autocomplete="off">
+        <input id="message-input" maxlength="500" placeholder="Message the room, or /pm user message" />
+        <button type="submit" class="btn">Send</button>
+      </form>
+    </main>
+  </section>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
