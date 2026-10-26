@@ -89,6 +89,30 @@ describe('authenticated room file sharing', () => {
     expect(download.headers['content-disposition']).toContain('hello.png');
   });
 
+  test.each([
+    'Ảnh chụp màn hình.txt',
+    'meeting-notes.txt',
+    "Bob's (final) 50%.txt"
+  ])('preserves valid multipart filename %s through metadata and download headers', async (fileName) => {
+    const cookie = await signup('alice');
+    const client = await openSocket(cookie);
+    await emit(client, 'join', { room: 'general' });
+    const broadcast = new Promise((resolve) => client.once('message', resolve));
+    const form = multipart(fileName, Buffer.from('UTF-8 text'), 'text/plain');
+    const uploaded = await request('POST', '/api/rooms/general/files', { cookie, ...form });
+    expect(uploaded.status).toBe(201);
+    expect(JSON.parse(uploaded.body).fileName).toBe(fileName);
+    expect((await broadcast).fileName).toBe(fileName);
+    expect(fileStore.files[0].originalName).toBe(fileName);
+    expect((await emit(client, 'files:sync', { afterId: 0 })).files[0].fileName).toBe(fileName);
+    const downloaded = await request('GET', '/api/files/1/download', { cookie });
+    expect(downloaded.status).toBe(200);
+    const disposition = downloaded.headers['content-disposition'];
+    const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/)[1];
+    expect(decodeURIComponent(encoded)).toBe(fileName);
+    expect(disposition).toContain('filename=');
+  });
+
   test('rejects uploads without a session and files with invalid content', async () => {
     const form = multipart('fake.png', Buffer.from('not an image'), 'image/png');
     expect((await request('POST', '/api/rooms/general/files', form)).status).toBe(401);

@@ -51,6 +51,9 @@ function createServer(options = {}) {
   if (fileStore) {
     fs.mkdirSync(uploadsDir, { recursive: true });
     const upload = multer({
+      // Browser multipart filenames are UTF-8 bytes; Busboy otherwise decodes
+      // non-extended `filename=` parameters as Latin-1 by default.
+      defParamCharset: 'utf8',
       storage: multer.diskStorage({
         destination: (_req, _file, callback) => callback(null, uploadsDir),
         filename: (_req, _file, callback) => callback(null, `${crypto.randomUUID()}.upload`)
@@ -110,10 +113,12 @@ function createServer(options = {}) {
         if (!rooms.hasUser(file.room, req.session.user.id)) return res.status(403).json({ error: 'Join this room to download the file' });
         if (!/^[a-f0-9-]{36}$/i.test(file.storageName)) return res.status(404).json({ error: 'File not found' });
         const storagePath = path.join(uploadsDir, `${file.storageName}.upload`);
+        const asciiFilename = file.originalName.replace(/[^\x20-\x7e]|["\\;]/g, '_');
+        const encodedFilename = encodeURIComponent(file.originalName).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
         res.set({
           'Content-Type': file.mimeType,
           'Content-Length': String(file.size),
-          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.originalName)}`,
+          'Content-Disposition': `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`,
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'private, no-store'
         });
