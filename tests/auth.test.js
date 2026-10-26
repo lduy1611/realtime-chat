@@ -4,7 +4,7 @@ const http = require('http');
 const { io: Client } = require('socket.io-client');
 const { createServer } = require('../src/server');
 const { createSession } = require('../src/auth');
-const { TestUserStore, createTestSession } = require('./helpers');
+const { TestUserStore, TestFileStore, createTestSession } = require('./helpers');
 
 let httpServer;
 let io;
@@ -37,6 +37,7 @@ beforeEach((done) => {
   ({ httpServer, io } = createServer({
     messageStore: { async getRoomHistory() { return []; }, async getRoomMessagesAfter() { return []; }, async save() { return { id: 1, timestamp: Date.now() }; } },
     userStore,
+    fileStore: new TestFileStore(),
     sessionMiddleware
   }));
   httpServer.listen(0, () => {

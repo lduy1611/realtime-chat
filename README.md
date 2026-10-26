@@ -73,8 +73,8 @@ Copy-Item .env.example .env
 1. Install and start MySQL Server. If it is already installed, open the Windows Services app and start the MySQL service if needed.
 2. Open MySQL Workbench and connect to your local MySQL Server. Before any schema changes, select **Server → Data Export**, select `realtime_chat`, choose **Dump Structure and Data** and **Export to Self-Contained File**, then click **Start Export**. Keep the resulting backup outside the project.
 3. Open `sql/init.sql` in Workbench and execute it if the database or original `messages` table has not been created yet.
-4. Review `sql/migrations/001_accounts_sessions.sql`, then open and execute it in Workbench. This additive migration creates only `users` and `sessions`; it does not alter or delete rows or columns in `messages`. The app performs read-only table checks and does not run migrations at startup.
-5. Edit the project `.env` file with your MySQL host, port, username, password, and a new session secret. Do not commit `.env`.
+4. Review and apply the migration files in order in Workbench: `001_accounts_sessions.sql`, then `002_files.sql`. They add `users`, `sessions`, and `files`; neither migration alters or deletes existing rows or columns in `messages`. The app performs read-only table checks and does not run migrations at startup.
+5. Copy `.env.example` to `.env`, then enter your MySQL host, port, username, password, and a new session secret. Do not commit `.env`.
 
 Example `.env` for a local server:
 
@@ -90,7 +90,13 @@ SESSION_SECRET=
 
 Generate a session secret locally in PowerShell with `node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"` and paste the output into `.env`. Never paste the generated value into source code or commit it. For localhost over HTTP the session cookie is HttpOnly and SameSite=Lax without Secure; production mode requires HTTPS for Secure cookies.
 
-Start the app with `npm start`. It checks MySQL and the `users`/`sessions` tables before listening on port 3000. If the reviewed migration has not been run, startup fails without changing the database. A failed history read prevents joining, and a failed message write prevents broadcast and returns an error to the sender. `npm test` uses fake stores and does not require MySQL.
+Start the app with `npm start`. It checks MySQL and the `users`/`sessions`/`files` tables before listening on port 3000. If a reviewed migration has not been run, startup fails without changing the database. A failed history read prevents joining, and a failed message write prevents broadcast and returns an error to the sender. `npm test` uses fake stores and does not require MySQL.
+
+### File sharing
+
+Review `sql/migrations/002_files.sql` and run it manually in MySQL Workbench after taking a backup. It only adds the `files` metadata table and does not modify existing rows or tables. The app does not run migrations automatically. Signed-in members of a room can attach PNG/JPEG/GIF/WebP images, PDF, TXT, or DOCX files up to 10 MB. File bytes are saved under the server's `uploads/` directory (or `UPLOADS_DIR` if configured); this directory is not public. Downloads go through the authenticated `/api/files/:id/download` endpoint and require an active connection in that file's room. File history and reconnect sync use file IDs separately from chat message IDs.
+
+After applying the reviewed migration, restart the app. Join a room and click **Attach file**. To demo with two clients, open `http://localhost:3000` in two browser profiles/windows, sign in as Alice and Bob, and join the same room. Upload from Alice; Bob should see the filename, size, and download control. Use the development disconnect controls on one client, send a file from the other while disconnected, then reconnect; the missed file should appear once. Do not copy files into `public/` or expose `uploads/` through a web server.
 
 ## Usage
 
@@ -130,6 +136,8 @@ when `NODE_ENV=development`; they stay hidden in production and other modes.
 | POST   | `/api/auth/login` | Sign in and rotate the session                   |
 | POST   | `/api/auth/logout` | Destroy the session and its active sockets     |
 | GET    | `/api/auth/me` | Return the current account                       |
+| POST   | `/api/rooms/:room/files` | Upload one allowed file (multipart field `file`, max 10 MB) |
+| GET    | `/api/files/:id/download` | Download a file after session and room-membership checks |
 
 ## Socket event reference
 
@@ -137,8 +145,9 @@ when `NODE_ENV=development`; they stay hidden in production and other modes.
 
 | Event     | Payload                        | Ack response                                                   |
 |-----------|--------------------------------|----------------------------------------------------------------|
-| `join`    | `{ room }`                      | `{ ok: true, username, room, history: Message[] }` or `{ ok: false, error }` |
+| `join`    | `{ room }`                      | `{ ok: true, username, room, history: Message[], files: FileMessage[] }` or `{ ok: false, error }` |
 | `message` | `{ text }`                     | `{ ok: true, id }` or `{ ok: false, error }`                   |
+| `files:sync` | `{ afterId }`                 | `{ ok: true, files: FileMessage[] }` for the joined room       |
 | `typing`  | `boolean`                      | none                                                           |
 
 `text` beginning with `/pm <user> ` is routed as a private message.
@@ -174,9 +183,10 @@ Integration tests spin up the real server on a random port and drive it with `so
 npm test
 ```
 
-34 tests cover authentication, cookie sessions, invalid Socket.IO connections, identity spoofing,
-joining and validation, room updates, message delivery, history, private messaging, persistence errors
-and reconnect synchronization. They use in-memory test stores and do not run the MySQL migration.
+The suite covers authentication, cookie sessions, invalid Socket.IO connections, identity spoofing,
+joining and validation, room updates, message delivery, history, private messaging, file upload/download,
+file access checks, upload limits, invalid file data, and reconnect synchronization. Tests use in-memory
+stores and temporary upload folders; they do not run MySQL migrations.
 
 ## Project structure
 
@@ -190,6 +200,7 @@ realtime-chat/
 │   ├── rooms.js        # in-memory online room membership
 │   ├── db.js           # dotenv config and MySQL pool
 │   ├── messages.js     # parameterised message persistence and history queries
+│   ├── files.js        # file metadata queries and content checks
 │   ├── rateLimit.js    # sliding-window RateLimiter
 │   └── validate.js     # name validation, HTML escaping, message sanitisation
 ├── public/
@@ -199,11 +210,13 @@ realtime-chat/
 ├── tests/
 │   ├── auth.test.js    # authentication and Socket.IO authorization tests
 │   ├── chat.test.js    # Socket.IO integration tests using a fake store
+│   ├── files.test.js   # authenticated file upload, download, and sync tests
 │   └── messages.test.js # message store query tests
 ├── sql/
 │   ├── init.sql        # original database and messages table setup
 │   └── migrations/
-│       └── 001_accounts_sessions.sql # additive users and sessions tables
+│       ├── 001_accounts_sessions.sql # additive users and sessions tables
+│       └── 002_files.sql             # additive file metadata table
 ├── .env.example
 ├── package.json
 ├── LICENSE

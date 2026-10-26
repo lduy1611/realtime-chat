@@ -81,6 +81,8 @@
       <p id="typing" class="typing"></p>
       <form id="message-form" class="composer" autocomplete="off">
         <input id="message-input" maxlength="500" placeholder="Message the room, or /pm user message" />
+        <input id="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
+        <button id="file-button" type="button" class="btn ghost" aria-label="Attach a file">Attach file</button>
         <button type="submit" class="btn">Send</button>
       </form>
     </main>

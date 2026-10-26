@@ -2,12 +2,16 @@
 
 const http = require('http');
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 const express = require('express');
+const multer = require('multer');
 const { Server } = require('socket.io');
 const { RoomStore } = require('./rooms');
 const { RateLimiter } = require('./rateLimit');
 const { validateName, sanitizeMessage } = require('./validate');
-const { installAuthRoutes } = require('./auth');
+const { installAuthRoutes, sameOrigin } = require('./auth');
+const { MAX_FILE_SIZE, safeOriginalName, detectFile, publicFile } = require('./files');
 
 const PM_RE = /^\/pm\s+(\S+)\s+([\s\S]+)$/;
 let nextMessageId = 1;
@@ -28,6 +32,8 @@ function createServer(options = {}) {
   const messageStore = options.messageStore;
   const userStore = options.userStore;
   const sessionMiddleware = options.sessionMiddleware;
+  const fileStore = options.fileStore;
+  const uploadsDir = options.uploadsDir || path.join(__dirname, '..', 'uploads');
   const developmentMode = options.developmentMode ?? process.env.NODE_ENV === 'development';
   if (!messageStore || !userStore || !sessionMiddleware) {
     throw new Error('createServer requires messageStore, userStore, and sessionMiddleware');
@@ -37,6 +43,92 @@ function createServer(options = {}) {
   app.use(sessionMiddleware);
   app.use(express.static(path.join(__dirname, '..', 'public')));
   installAuthRoutes(app, { userStore, io });
+
+  const requireAccount = (req, res, next) => {
+    if (!req.session?.user?.id) return res.status(401).json({ error: 'Authentication required' });
+    next();
+  };
+  if (fileStore) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    const upload = multer({
+      storage: multer.diskStorage({
+        destination: (_req, _file, callback) => callback(null, uploadsDir),
+        filename: (_req, _file, callback) => callback(null, `${crypto.randomUUID()}.upload`)
+      }),
+      limits: { fileSize: MAX_FILE_SIZE, files: 1 }
+    }).single('file');
+
+    app.post('/api/rooms/:room/files', sameOrigin, requireAccount, (req, res, next) => {
+      upload(req, res, (error) => {
+        if (!error) return next();
+        if (req.file?.path) fs.promises.unlink(req.file.path).catch(() => {});
+        const tooLarge = error.code === 'LIMIT_FILE_SIZE';
+        return res.status(tooLarge ? 413 : 400).json({ error: tooLarge ? 'File exceeds the 10 MB limit' : 'A single file upload is required' });
+      });
+    }, async (req, res) => {
+      const room = req.params.room;
+      const user = req.session.user;
+      if (!req.file) return res.status(400).json({ error: 'Choose a file to upload' });
+      if (!rooms.hasUser(room, user.id)) {
+        await fs.promises.unlink(req.file.path).catch(() => {});
+        return res.status(403).json({ error: 'Join this room before uploading files' });
+      }
+      const originalName = safeOriginalName(req.file.originalname);
+      let detected;
+      try {
+        detected = detectFile(await fs.promises.readFile(req.file.path), originalName);
+      } catch (error) {
+        await fs.promises.unlink(req.file.path).catch(() => {});
+        console.error('Failed to inspect uploaded file:', error);
+        return res.status(500).json({ error: 'Could not inspect uploaded file' });
+      }
+      if (!detected) {
+        await fs.promises.unlink(req.file.path).catch(() => {});
+        return res.status(415).json({ error: 'Unsupported or invalid file type' });
+      }
+      try {
+        const saved = await fileStore.save({
+          room, uploadedBy: user.id, uploader: user.username, originalName,
+          storageName: path.basename(req.file.filename, '.upload'), mimeType: detected.mime,
+          size: req.file.size, timestamp: Date.now()
+        });
+        const message = publicFile(saved);
+        io.to(room).emit('message', message);
+        res.status(201).json(message);
+      } catch (error) {
+        await fs.promises.unlink(req.file.path).catch(() => {});
+        console.error('Failed to save file metadata:', error);
+        res.status(500).json({ error: 'Could not save file metadata' });
+      }
+    });
+
+    app.get('/api/files/:id/download', requireAccount, async (req, res) => {
+      if (!/^\d+$/.test(req.params.id)) return res.status(404).json({ error: 'File not found' });
+      try {
+        const file = await fileStore.findById(Number(req.params.id));
+        if (!file) return res.status(404).json({ error: 'File not found' });
+        if (!rooms.hasUser(file.room, req.session.user.id)) return res.status(403).json({ error: 'Join this room to download the file' });
+        if (!/^[a-f0-9-]{36}$/i.test(file.storageName)) return res.status(404).json({ error: 'File not found' });
+        const storagePath = path.join(uploadsDir, `${file.storageName}.upload`);
+        res.set({
+          'Content-Type': file.mimeType,
+          'Content-Length': String(file.size),
+          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.originalName)}`,
+          'X-Content-Type-Options': 'nosniff',
+          'Cache-Control': 'private, no-store'
+        });
+        const stream = fs.createReadStream(storagePath);
+        stream.on('error', (error) => {
+          if (!res.headersSent) res.status(error.code === 'ENOENT' ? 404 : 500).json({ error: 'File is unavailable' });
+          else res.destroy(error);
+        });
+        stream.pipe(res);
+      } catch (error) {
+        console.error('File download failed:', error);
+        if (!res.headersSent) res.status(500).json({ error: 'Could not download file' });
+      }
+    });
+  }
 
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', uptime: process.uptime() });
@@ -114,8 +206,12 @@ function createServer(options = {}) {
       socket.join(roomName);
 
       let history;
+      let files = [];
       try {
-        history = await messageStore.getRoomHistory(roomName, rooms.historyLimit);
+        [history, files] = await Promise.all([
+          messageStore.getRoomHistory(roomName, rooms.historyLimit),
+          fileStore ? fileStore.getRoomHistory(roomName, rooms.historyLimit) : Promise.resolve([])
+        ]);
       } catch (error) {
         rooms.leave(roomName, socket.id);
         socket.leave(roomName);
@@ -126,7 +222,7 @@ function createServer(options = {}) {
       }
       delete socket.data.joining;
 
-      reply({ ok: true, username, room: roomName, history });
+      reply({ ok: true, username, room: roomName, history, files });
       socket.to(roomName).emit('message', makeMessage('system', roomName, { text: `${username} joined the room` }));
       broadcastUsers(roomName);
       broadcastRooms();
@@ -174,6 +270,21 @@ function createServer(options = {}) {
       } catch (error) {
         console.error('Failed to sync room messages:', error);
         reply({ ok: false, error: 'Could not sync chat messages. Please try again.' });
+      }
+    });
+
+    socket.on('files:sync', async (payload, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
+      const { room } = socket.data;
+      if (!room) return reply({ ok: false, error: 'Join a room first' });
+      const afterId = payload && Number(payload.afterId);
+      if (!Number.isSafeInteger(afterId) || afterId < 0) return reply({ ok: false, error: 'Invalid file cursor' });
+      if (!fileStore) return reply({ ok: true, files: [] });
+      try {
+        reply({ ok: true, files: await fileStore.getRoomFilesAfter(room, afterId) });
+      } catch (error) {
+        console.error('Failed to sync room files:', error);
+        reply({ ok: false, error: 'Could not sync files. Please try again.' });
       }
     });
 

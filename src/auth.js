@@ -152,4 +152,4 @@ function installAuthRoutes(app, { userStore, io }) {
   });
 }
 
-module.exports = { SESSION_COOKIE, createSession, installAuthRoutes };
+module.exports = { SESSION_COOKIE, createSession, installAuthRoutes, sameOrigin };

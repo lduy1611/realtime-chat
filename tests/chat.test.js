@@ -3,7 +3,7 @@
 const http = require('http');
 const { io: Client } = require('socket.io-client');
 const { createServer } = require('../src/server');
-const { TestUserStore, createTestSession } = require('./helpers');
+const { TestUserStore, TestFileStore, createTestSession } = require('./helpers');
 
 let httpServer;
 let io;
@@ -11,6 +11,7 @@ let url;
 const clients = [];
 let messageStore;
 let userStore;
+let fileStore;
 let sessionMiddleware;
 
 class TestMessageStore {
@@ -91,9 +92,10 @@ const getJson = (path) => getJsonAt(url, path);
 beforeEach((done) => {
   messageStore = new TestMessageStore();
   userStore = new TestUserStore();
+  fileStore = new TestFileStore();
   ({ sessionMiddleware } = createTestSession());
   ({ httpServer, io } = createServer({
-    messageStore, userStore, sessionMiddleware, historyLimit: 5,
+    messageStore, fileStore, userStore, sessionMiddleware, historyLimit: 5,
     rateLimit: { limit: 3, windowMs: 1000 }
   }));
   httpServer.listen(0, () => {
@@ -111,7 +113,7 @@ describe('join', () => {
   test('accepts a valid username and room and returns empty history', async () => {
     const c = await connect('alice');
     const res = await join(c, 'alice', 'general');
-    expect(res).toEqual({ ok: true, username: 'alice', room: 'general', history: [] });
+    expect(res).toEqual({ ok: true, username: 'alice', room: 'general', history: [], files: [] });
   });
 
   test('rejects invalid usernames and rooms', async () => {

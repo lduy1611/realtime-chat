@@ -28,6 +28,8 @@
     typing: $('typing'),
     messageForm: $('message-form'),
     messageInput: $('message-input'),
+    fileInput: $('file-input'),
+    fileButton: $('file-button'),
     status: $('status'),
     connectionTestControls: $('connection-test-controls'),
     simulateDisconnect: $('simulate-disconnect'),
@@ -41,7 +43,7 @@
 
   const state = {
     username: null, userId: null, room: null, typing: new Set(), typingTimer: null, isTyping: false,
-    seenMessageIds: new Set(), lastMessageId: 0, developmentMode: false
+    seenMessageIds: new Set(), lastMessageId: 0, seenFileIds: new Set(), lastFileId: 0, developmentMode: false
   };
 
   const formatTime = (ts) =>
@@ -104,19 +106,28 @@
       state.seenMessageIds.add(key);
       if (Number.isSafeInteger(id) && id > state.lastMessageId) state.lastMessageId = id;
     }
+    if (m.type === 'file' && m.id != null) {
+      const id = Number(m.id);
+      const key = String(m.id);
+      if (state.seenFileIds.has(key)) return;
+      state.seenFileIds.add(key);
+      if (Number.isSafeInteger(id) && id > state.lastFileId) state.lastFileId = id;
+    }
 
     const li = document.createElement('li');
     li.className = 'msg ' + m.type;
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
-    if (m.type === 'chat' || m.type === 'private') {
+    if (m.type === 'chat' || m.type === 'private' || m.type === 'file') {
       if (m.from === state.username) li.classList.add('own');
       const meta = document.createElement('div');
       meta.className = 'meta';
       const from = document.createElement('span');
       from.className = 'from';
-      if (m.type === 'private') {
+      if (m.type === 'file') {
+        from.textContent = m.from;
+      } else if (m.type === 'private') {
         from.textContent = m.from === state.username ? 'you -> ' + m.to : m.from + ' -> you';
       } else {
         from.textContent = m.from;
@@ -126,8 +137,23 @@
       time.textContent = formatTime(m.timestamp);
       meta.append(from, time);
       li.appendChild(meta);
-      // Chat text is HTML-escaped by the server before broadcast.
-      bubble.innerHTML = m.text;
+      if (m.type === 'file') {
+        const name = document.createElement('span');
+        name.className = 'file-name';
+        name.textContent = m.fileName;
+        const size = document.createElement('span');
+        size.className = 'file-size';
+        size.textContent = formatFileSize(m.fileSize);
+        const download = document.createElement('a');
+        download.className = 'file-download';
+        download.href = m.downloadUrl;
+        download.textContent = 'Download';
+        download.setAttribute('aria-label', `Download ${m.fileName}`);
+        bubble.append(name, size, download);
+      } else {
+        // Chat text is HTML-escaped by the server before broadcast.
+        bubble.innerHTML = m.text;
+      }
     } else {
       bubble.textContent = m.text;
     }
@@ -137,6 +163,15 @@
   }
 
   const localNotice = (text, type) => appendMessage({ type: type || 'system', text, timestamp: Date.now() });
+  function formatFileSize(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  function renderStoredMessages(messages) {
+    messages.sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+    for (const message of messages) appendMessage(message);
+  }
 
   // ---- join / leave ----------------------------------------------------
 
@@ -154,7 +189,9 @@
       el.messages.innerHTML = '';
       state.seenMessageIds.clear();
       state.lastMessageId = 0;
-      for (const m of res.history) appendMessage(m);
+      state.seenFileIds.clear();
+      state.lastFileId = 0;
+      renderStoredMessages([...(res.history || []), ...(res.files || [])]);
       localNotice('You joined #' + res.room);
       el.joinScreen.classList.add('hidden');
       el.chatScreen.classList.remove('hidden');
@@ -198,6 +235,26 @@
     stopTyping();
   });
 
+  el.fileButton.addEventListener('click', () => el.fileInput.click());
+  el.fileInput.addEventListener('change', async () => {
+    const file = el.fileInput.files[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) { localNotice('Files must be 10 MB or smaller.', 'error'); el.fileInput.value = ''; return; }
+    const form = new FormData();
+    form.append('file', file);
+    el.fileButton.disabled = true;
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(state.room)}/files`, { method: 'POST', body: form });
+      const result = await response.json();
+      if (!response.ok) localNotice(result.error || 'Upload failed.', 'error');
+    } catch (_) {
+      localNotice('Could not upload file. Check your connection and try again.', 'error');
+    } finally {
+      el.fileButton.disabled = false;
+      el.fileInput.value = '';
+    }
+  });
+
   function stopTyping() {
     clearTimeout(state.typingTimer);
     if (state.isTyping) { state.isTyping = false; socket.emit('typing', false); }
@@ -238,9 +295,13 @@
         localNotice(res.error, 'error');
         return setConnectionStatus('offline');
       }
-      socket.emit('messages:sync', { afterId: state.lastMessageId }, (sync) => {
+      Promise.all([
+        new Promise((resolve) => socket.emit('messages:sync', { afterId: state.lastMessageId }, resolve)),
+        new Promise((resolve) => socket.emit('files:sync', { afterId: state.lastFileId }, resolve))
+      ]).then(([sync, fileSync]) => {
         if (!sync.ok) localNotice(sync.error, 'error');
-        else for (const message of sync.messages) appendMessage(message);
+        if (!fileSync.ok) localNotice(fileSync.error, 'error');
+        renderStoredMessages([...(sync.messages || []), ...(fileSync.files || [])]);
         setConnectionStatus('online');
         localNotice('Reconnected');
       });

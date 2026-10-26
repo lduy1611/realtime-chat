@@ -1,5 +1,6 @@
 node_modules/
 .env
 coverage/
+uploads/
 npm-debug.log*
 .DS_Store
