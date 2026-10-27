@@ -39,7 +39,8 @@
     sidebarOpen: $('sidebar-open'),
     sidebarClose: $('sidebar-close'),
     leaveBtn: $('leave-btn'),
-    logoutBtn: $('logout-btn')
+    logoutBtn: $('logout-btn'),
+    joinLogoutBtn: $('join-logout-btn')
   };
 
   const state = {
@@ -316,7 +317,7 @@
   });
 
   el.leaveBtn.addEventListener('click', () => window.location.reload());
-  el.logoutBtn.addEventListener('click', async () => {
+  async function logout() {
     connectionGeneration++;
     roomGeneration++;
     state.room = null;
@@ -328,7 +329,10 @@
       socket.disconnect();
       window.location.reload();
     }
-  });
+  }
+
+  el.logoutBtn.addEventListener('click', logout);
+  el.joinLogoutBtn.addEventListener('click', logout);
 
   el.simulateDisconnect.addEventListener('click', () => {
     if (!state.developmentMode || !socket.connected) return;

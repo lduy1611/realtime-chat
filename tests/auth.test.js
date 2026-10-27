@@ -1,6 +1,8 @@
 'use strict';
 
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { io: Client } = require('socket.io-client');
 const { createServer } = require('../src/server');
 const { createSession, sameOrigin } = require('../src/auth');
@@ -97,10 +99,41 @@ describe('authentication API', () => {
 
   test('logout destroys the session and clears the cookie', async () => {
     const registered = await request('POST', '/api/auth/register', { username: 'alice', password: 'correct horse 1' });
-    const logout = await request('POST', '/api/auth/logout', {}, registered.cookie);
+    const login = await request('POST', '/api/auth/login', { username: 'alice', password: 'correct horse 1' });
+    const logout = await request('POST', '/api/auth/logout', {}, login.cookie);
     expect(logout.status).toBe(200);
     expect(logout.setCookie).toContain('Expires=Thu, 01 Jan 1970');
-    expect((await request('GET', '/api/auth/me', null, registered.cookie)).status).toBe(401);
+    expect((await request('GET', '/api/auth/me', null, login.cookie)).status).toBe(401);
+    expect(registered.status).toBe(201);
+  });
+
+  test('provides Logout on the room picker and preserves the chat Logout and Leave room actions', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    const joinScreen = html.slice(html.indexOf('id="join-screen"'), html.indexOf('id="chat-screen"'));
+    const chatScreen = html.slice(html.indexOf('id="chat-screen"'));
+    expect(joinScreen.indexOf('id="join-logout-btn"')).toBeGreaterThan(joinScreen.indexOf('>Join room</button>'));
+    expect(chatScreen).toContain('id="logout-btn"');
+    expect(chatScreen).toContain('>Leave room</button>');
+  });
+
+  test('can leave a joined room and then log out using the same session', async () => {
+    const registered = await request('POST', '/api/auth/register', { username: 'alice', password: 'correct horse 1' });
+    const login = await request('POST', '/api/auth/login', { username: 'alice', password: 'correct horse 1' });
+    const client = Client(url, { forceNew: true, transports: ['websocket'], extraHeaders: { Cookie: login.cookie } });
+    clients.push(client);
+    await new Promise((resolve) => client.once('connect', resolve));
+    const joined = await new Promise((resolve) => client.emit('join', { room: 'general' }, resolve));
+    expect(joined.ok).toBe(true);
+
+    const left = new Promise((resolve) => client.once('disconnect', resolve));
+    client.disconnect(); // The Leave room button reloads the page, closing this socket.
+    expect(await left).toBe('io client disconnect');
+    expect((await request('GET', '/api/rooms')).body).toEqual([]);
+
+    const logout = await request('POST', '/api/auth/logout', {}, login.cookie);
+    expect(logout.status).toBe(200);
+    expect((await request('GET', '/api/auth/me', null, login.cookie)).status).toBe(401);
+    expect(registered.status).toBe(201);
   });
 
   test('rejects cross-origin authentication requests', async () => {
