@@ -17,9 +17,22 @@ let sessionMiddleware;
 class TestMessageStore {
   constructor() { this.messages = []; this.nextId = 1; }
   async save(message) {
-    const saved = { ...message, id: this.nextId++, timestamp: Date.now() };
+    if (message.clientMessageId) {
+      const existing = this.messages.find((row) => row.userId === message.userId && row.clientMessageId === message.clientMessageId.toLowerCase());
+      if (existing) {
+        if (existing.type !== message.type || existing.room !== message.room || existing.text !== message.text) {
+          const error = new Error('message ID conflict'); error.code = 'MESSAGE_ID_CONFLICT'; throw error;
+        }
+        return { id: existing.id, timestamp: existing.timestamp, duplicate: true };
+      }
+    }
+    const saved = { ...message, clientMessageId: message.clientMessageId?.toLowerCase() ?? null, id: this.nextId++, timestamp: Date.now() };
     this.messages.push(saved);
-    return { id: saved.id, timestamp: saved.timestamp };
+    return { id: saved.id, timestamp: saved.timestamp, duplicate: false };
+  }
+  async findByClientMessageId(userId, clientMessageId) {
+    const row = this.messages.find((item) => item.userId === userId && item.clientMessageId === clientMessageId.toLowerCase());
+    return row ? { ...row, recipient: row.to, id: row.id } : null;
   }
   async getRoomHistory(room, limit) {
     return this.messages
@@ -212,6 +225,98 @@ describe('rooms', () => {
 });
 
 describe('messaging', () => {
+  test('deduplicates a retry after a lost ACK and does not broadcast the saved row twice', async () => {
+    const alice = await connect('alice');
+    const bob = await connect('bob');
+    await join(alice, 'alice', 'general');
+    await join(bob, 'bob', 'general');
+    const payload = { text: 'send once', clientMessageId: 'c8418fb5-8bde-4a4c-a6bb-930e34e47af2' };
+    const firstBroadcast = onceType(bob, 'chat');
+    const disconnected = once(alice, 'disconnect');
+    const actualSave = messageStore.save.bind(messageStore);
+    let didDisconnect = false;
+    messageStore.save = async (message) => {
+      const saved = await actualSave(message);
+      if (message.clientMessageId === payload.clientMessageId && !didDisconnect) {
+        didDisconnect = true;
+        io.sockets.sockets.get(alice.id).disconnect(true);
+      }
+      return saved;
+    };
+    let firstAckReceived = false;
+    alice.emit('message', payload, () => { firstAckReceived = true; });
+    const delivered = await firstBroadcast;
+    await disconnected;
+    expect(firstAckReceived).toBe(false);
+
+    const reconnected = once(alice, 'connect');
+    alice.connect();
+    await reconnected;
+    expect((await join(alice, 'alice', 'general')).ok).toBe(true);
+    const retryAck = await emit(alice, 'message', { ...payload, clientMessageId: payload.clientMessageId.toUpperCase() });
+
+    expect(retryAck).toMatchObject({ ok: true, id: delivered.id, clientMessageId: payload.clientMessageId });
+    expect(messageStore.messages.filter((row) => row.clientMessageId === payload.clientMessageId)).toHaveLength(1);
+    const duplicateBroadcast = jest.fn();
+    bob.on('message', duplicateBroadcast);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(duplicateBroadcast).not.toHaveBeenCalled();
+  });
+
+  test('rejects reusing a client message ID with different content or room', async () => {
+    const alice = await connect('alice');
+    await join(alice, 'alice', 'general');
+    const clientMessageId = 'b7b068d5-a88f-49a0-9e09-dc59349bd341';
+    const first = await emit(alice, 'message', { text: 'original', clientMessageId });
+    const textConflict = await emit(alice, 'message', { text: 'changed', clientMessageId });
+    expect(first.ok).toBe(true);
+    expect(textConflict).toMatchObject({ ok: false, code: 'MESSAGE_ID_CONFLICT' });
+    expect(messageStore.messages.filter((row) => row.clientMessageId === clientMessageId)).toHaveLength(1);
+
+    const otherRoomClient = await connectExisting('alice');
+    await join(otherRoomClient, 'alice', 'another-room');
+    const roomConflict = await emit(otherRoomClient, 'message', { text: 'original', clientMessageId });
+    expect(roomConflict).toMatchObject({ ok: false, code: 'MESSAGE_ID_CONFLICT' });
+    expect(messageStore.messages.filter((row) => row.clientMessageId === clientMessageId)).toHaveLength(1);
+  });
+
+  test('scopes the same client message ID independently for different accounts', async () => {
+    const alice = await connect('alice');
+    const bob = await connect('bob');
+    await join(alice, 'alice', 'general');
+    await join(bob, 'bob', 'general');
+    const clientMessageId = 'ef5b000e-96d6-4ce4-945a-89fae8232aad';
+    const aliceResult = await emit(alice, 'message', { text: 'same text', clientMessageId });
+    const bobResult = await emit(bob, 'message', { text: 'same text', clientMessageId });
+    expect(aliceResult.ok).toBe(true);
+    expect(bobResult.ok).toBe(true);
+    expect(bobResult.id).not.toBe(aliceResult.id);
+    expect(messageStore.messages.filter((row) => row.clientMessageId === clientMessageId)).toHaveLength(2);
+  });
+
+  test('validates supplied IDs while accepting legacy messages without clientMessageId', async () => {
+    const alice = await connect('alice');
+    await join(alice, 'alice', 'general');
+    expect(await emit(alice, 'message', { text: 'bad id', clientMessageId: 'not-a-uuid' }))
+      .toMatchObject({ ok: false, error: 'Invalid client message ID' });
+    const oldClient = await emit(alice, 'message', { text: 'legacy client' });
+    expect(oldClient.ok).toBe(true);
+    expect(messageStore.messages.find((row) => row.text === 'legacy client')).toMatchObject({ clientMessageId: null, userId: 1 });
+  });
+
+  test('does not ACK success until the message store resolves', async () => {
+    const alice = await connect('alice');
+    await join(alice, 'alice', 'general');
+    let finishSave;
+    messageStore.save = () => new Promise((resolve) => { finishSave = resolve; });
+    let acked = false;
+    const resultPromise = emit(alice, 'message', { text: 'wait for MySQL' }).then((result) => { acked = true; return result; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(acked).toBe(false);
+    finishSave({ id: 987, timestamp: Date.now(), duplicate: false });
+    expect((await resultPromise).ok).toBe(true);
+  });
+
   test('broadcasts chat messages with sender and timestamp to the room only', async () => {
     const a = await connect('alice');
     const b = await connect('bob');
@@ -347,6 +452,20 @@ describe('typing', () => {
 });
 
 describe('private messages', () => {
+  test('deduplicates private message retries without re-broadcasting', async () => {
+    const alice = await connect('alice');
+    const bob = await connect('bob');
+    await join(alice, 'alice', 'general');
+    await join(bob, 'bob', 'general');
+    const clientMessageId = '3d3a41c0-83e4-4a10-90f7-74b4ed2ae848';
+    const received = onceType(bob, 'private');
+    const first = await emit(alice, 'message', { text: '/pm bob private once', clientMessageId });
+    expect(await received).toMatchObject({ id: first.id, clientMessageId });
+    const duplicate = await emit(alice, 'message', { text: '/pm bob private once', clientMessageId });
+    expect(duplicate).toMatchObject({ ok: true, id: first.id });
+    expect(messageStore.messages.filter((row) => row.clientMessageId === clientMessageId)).toHaveLength(1);
+  });
+
   test('/pm delivers only to the sender and the target', async () => {
     const a = await connect('alice');
     const b = await connect('bob');

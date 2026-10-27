@@ -73,7 +73,7 @@ Copy-Item .env.example .env
 1. Install and start MySQL Server. If it is already installed, open the Windows Services app and start the MySQL service if needed.
 2. Open MySQL Workbench and connect to your local MySQL Server. Before any schema changes, select **Server → Data Export**, select `realtime_chat`, choose **Dump Structure and Data** and **Export to Self-Contained File**, then click **Start Export**. Keep the resulting backup outside the project.
 3. Open `sql/init.sql` in Workbench and execute it if the database or original `messages` table has not been created yet.
-4. Review and apply the migration files in order in Workbench: `001_accounts_sessions.sql`, then `002_files.sql`. They add `users`, `sessions`, and `files`; neither migration alters or deletes existing rows or columns in `messages`. The app performs read-only table checks and does not run migrations at startup.
+4. Review and apply the migration files in order in Workbench: `001_accounts_sessions.sql`, `002_files.sql`, then `003_message_idempotency.sql`. They add the account/session/file tables and nullable idempotency columns/index; they do not delete or rewrite existing `messages` rows. The app performs read-only schema checks and does not run migrations at startup.
 5. Copy `.env.example` to `.env`, then enter your MySQL host, port, username, password, and a new session secret. Do not commit `.env`.
 
 Example `.env` for a local server:
@@ -216,7 +216,8 @@ realtime-chat/
 │   ├── init.sql        # original database and messages table setup
 │   └── migrations/
 │       ├── 001_accounts_sessions.sql # additive users and sessions tables
-│       └── 002_files.sql             # additive file metadata table
+│       ├── 002_files.sql             # additive file metadata table
+│       └── 003_message_idempotency.sql # nullable client id + unique account key
 ├── .env.example
 ├── package.json
 ├── LICENSE

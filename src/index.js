@@ -17,6 +17,7 @@ async function start() {
     await pool.execute('SELECT id FROM users LIMIT 0');
     await pool.execute('SELECT session_id FROM sessions LIMIT 0');
     await pool.execute('SELECT id FROM files LIMIT 0');
+    await pool.execute('SELECT client_message_id FROM messages LIMIT 0');
     const { sessionStore, sessionMiddleware } = createSession();
     if (typeof sessionStore.onReady === 'function') await sessionStore.onReady();
     const { httpServer } = createServer({

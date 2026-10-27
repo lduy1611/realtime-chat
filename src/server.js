@@ -14,6 +14,7 @@ const { installAuthRoutes, sameOrigin } = require('./auth');
 const { MAX_FILE_SIZE, safeOriginalName, detectFile, publicFile } = require('./files');
 
 const PM_RE = /^\/pm\s+(\S+)\s+([\s\S]+)$/;
+const CLIENT_MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 let nextMessageId = 1;
 
 function makeMessage(type, room, fields) {
@@ -163,24 +164,43 @@ function createServer(options = {}) {
     next();
   });
 
-  async function sendPrivate(socket, target, body, reply) {
+  async function sendPrivate(socket, target, body, clientMessageId, reply) {
     const { room, username } = socket.data;
     const { error, text } = sanitizeMessage(body);
     if (error) return reply({ ok: false, error });
 
-    const targetUser = rooms.findUser(room, target);
-    if (!targetUser) return reply({ ok: false, error: `User "${target}" is not in this room` });
-    const targetId = rooms.findSocketId(room, targetUser.id);
-    if (targetId === socket.id) return reply({ ok: false, error: 'You cannot message yourself' });
-
-    const recipient = targetUser.username;
     try {
-      const saved = await messageStore.save({ type: 'private', room, from: username, to: recipient, text });
-      const message = { id: saved.id, type: 'private', room, timestamp: saved.timestamp, from: username, to: recipient, text };
-      io.to(targetId).emit('message', message);
-      socket.emit('message', message);
-      reply({ ok: true, id: message.id });
+      if (clientMessageId && messageStore.findByClientMessageId) {
+        const previous = await messageStore.findByClientMessageId(socket.data.userId, clientMessageId);
+        if (previous) {
+          if (previous.type !== 'private' || previous.room !== room || previous.text !== text || previous.recipient?.toLowerCase() !== target.toLowerCase()) {
+            return reply({ ok: false, error: 'Client message ID conflicts with a previously saved message', code: 'MESSAGE_ID_CONFLICT' });
+          }
+          return reply({ ok: true, id: previous.id, clientMessageId });
+        }
+      }
+
+      const targetUser = rooms.findUser(room, target);
+      if (!targetUser) return reply({ ok: false, error: `User "${target}" is not in this room` });
+      const targetId = rooms.findSocketId(room, targetUser.id);
+      if (targetId === socket.id) return reply({ ok: false, error: 'You cannot message yourself' });
+      const recipient = targetUser.username;
+
+      const saved = await messageStore.save({
+        type: 'private', room, from: username, userId: socket.data.userId,
+        clientMessageId: clientMessageId || null, to: recipient, text
+      });
+      const message = { id: saved.id, type: 'private', room, timestamp: saved.timestamp, from: username, to: recipient, text,
+        ...(clientMessageId ? { clientMessageId } : {}) };
+      if (!saved.duplicate) {
+        io.to(targetId).emit('message', message);
+        socket.emit('message', message);
+      }
+      reply({ ok: true, id: message.id, ...(clientMessageId ? { clientMessageId } : {}) });
     } catch (error) {
+      if (error.code === 'MESSAGE_ID_CONFLICT') {
+        return reply({ ok: false, error: 'Client message ID conflicts with a previously saved message', code: 'MESSAGE_ID_CONFLICT' });
+      }
       console.error('Failed to save private message:', error);
       reply({ ok: false, error: 'Message could not be saved. Please try again.' });
     }
@@ -237,23 +257,60 @@ function createServer(options = {}) {
       const reply = typeof ack === 'function' ? ack : () => {};
       const { room, username } = socket.data;
       if (!room) return reply({ ok: false, error: 'Join a room first' });
+
+      const raw = payload && payload.text;
+      const rawClientMessageId = payload && payload.clientMessageId;
+      if (rawClientMessageId !== undefined && (typeof rawClientMessageId !== 'string' || !CLIENT_MESSAGE_ID_RE.test(rawClientMessageId))) {
+        return reply({ ok: false, error: 'Invalid client message ID' });
+      }
+      // UUIDs are case-insensitive; canonicalize before the binary-collated DB key.
+      const clientMessageId = rawClientMessageId?.toLowerCase();
+
+      const pm = typeof raw === 'string' ? raw.trim().match(PM_RE) : null;
+      // Idempotent retries do not consume a new-message rate-limit token.
+      if (clientMessageId && messageStore.findByClientMessageId) {
+        const { error, text } = sanitizeMessage(pm ? pm[2] : raw);
+        if (!error) {
+          try {
+            const previous = await messageStore.findByClientMessageId(socket.data.userId, clientMessageId);
+            if (previous) {
+              const expectedType = pm ? 'private' : 'chat';
+              const expectedRecipient = pm ? pm[1].toLowerCase() : null;
+              if (previous.type !== expectedType || previous.room !== room || previous.text !== text || (previous.recipient?.toLowerCase() ?? null) !== expectedRecipient) {
+                return reply({ ok: false, error: 'Client message ID conflicts with a previously saved message', code: 'MESSAGE_ID_CONFLICT' });
+              }
+              return reply({ ok: true, id: previous.id, clientMessageId });
+            }
+          } catch (error) {
+            console.error('Failed to check message retry:', error);
+            return reply({ ok: false, error: 'Message status could not be checked. Please retry.' });
+          }
+        }
+      }
+
       if (!socket.data.limiter.allow()) {
         return reply({ ok: false, error: 'You are sending messages too quickly' });
       }
-
-      const raw = payload && payload.text;
-      const pm = typeof raw === 'string' ? raw.trim().match(PM_RE) : null;
-      if (pm) return sendPrivate(socket, pm[1], pm[2], reply);
+      if (pm) return sendPrivate(socket, pm[1], pm[2], clientMessageId, reply);
 
       const { error, text } = sanitizeMessage(raw);
       if (error) return reply({ ok: false, error });
 
       try {
-        const saved = await messageStore.save({ type: 'chat', room, from: username, to: null, text });
-        const message = { id: saved.id, type: 'chat', room, timestamp: saved.timestamp, from: username, text };
-        io.to(room).emit('message', message);
-        reply({ ok: true, id: message.id });
+        const saved = await messageStore.save({
+          type: 'chat', room, from: username, userId: socket.data.userId,
+          clientMessageId: clientMessageId || null, to: null, text
+        });
+        const message = {
+          id: saved.id, type: 'chat', room, timestamp: saved.timestamp, from: username, text,
+          ...(clientMessageId ? { clientMessageId } : {})
+        };
+        if (!saved.duplicate) io.to(room).emit('message', message);
+        reply({ ok: true, id: message.id, ...(clientMessageId ? { clientMessageId } : {}) });
       } catch (error) {
+        if (error.code === 'MESSAGE_ID_CONFLICT') {
+          return reply({ ok: false, error: 'Client message ID conflicts with a previously saved message', code: 'MESSAGE_ID_CONFLICT' });
+        }
         console.error('Failed to save room message:', error);
         reply({ ok: false, error: 'Message could not be saved. Please try again.' });
       }
