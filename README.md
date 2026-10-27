@@ -6,33 +6,34 @@
 [![Tests](https://img.shields.io/badge/tests-34%20passing-4cd28a)](#running-tests)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A real-time chat application with rooms, built on **Express**, **Socket.IO** and **MySQL**, with a
-dependency-free vanilla HTML/CSS/JS client. Registered users join rooms, see who is online, watch
-typing indicators, receive recent history on join, and send private messages with a `/pm` command.
-The server stores bcrypt password hashes and HttpOnly MySQL-backed sessions, escapes HTML, enforces
-length limits and rate-limits chat and authentication attempts.
+Ứng dụng trò chuyện thời gian thực theo phòng, xây dựng bằng **Express**, **Socket.IO** và **MySQL**, với
+client HTML/CSS/JS thuần, không cần thư viện giao diện bổ sung. Người dùng đã đăng ký có thể vào phòng,
+xem ai đang trực tuyến, theo dõi trạng thái đang nhập, nhận lịch sử gần đây khi vào phòng và gửi tin riêng
+bằng lệnh `/pm`. Máy chủ lưu mật khẩu dưới dạng hash bcrypt, dùng session lưu trong MySQL với cookie HttpOnly,
+escape HTML, giới hạn độ dài tin và kiểm soát tốc độ gửi tin cũng như yêu cầu xác thực.
 
-📄 See [PROJECT.md](PROJECT.md) for the problem statement, design and implementation walkthrough.
+📄 Xem [PROJECT.md](PROJECT.md) để đọc bài toán, thiết kế và phần phân tích quá trình triển khai.
 
-## Features
+## Tính năng
 
-- **Rooms** – join any room by name; rooms are created on demand and removed when empty
-- **Validated identities** – usernames and room names are 2–20 chars (`A-Z a-z 0-9 _ -`); usernames are unique per room (case-insensitive)
-- **Live room list** – `GET /api/rooms` plus `rooms:update` pushes with user counts
-- **Message broadcast** – every chat message carries an id, sender, room and server timestamp
-- **System messages** – join/leave notices for the room
-- **Typing indicator** – "alice is typing…" relayed to everyone else in the room
-- **Online users sidebar** – kept in sync with `users:update`
-- **Message history** – last 100 room messages are loaded from MySQL and delivered in the join acknowledgement
-- **Private messages** – `/pm <user> <message>` delivers to one recipient, echoes to the sender, and is saved privately in MySQL
-- **Sanitisation** – HTML is escaped server-side; messages are trimmed and capped at 500 characters
-- **Rate limiting** – sliding window of 5 messages per second per socket
-- **Reconnect recovery** – the client rejoins its room and fetches only missing group messages by database ID, suppressing duplicates
-- **Connection status** – shows online, connection lost and reconnecting states
-- **Graceful disconnects** – leave notices, user/room lists and typing state all clean up
-- **Responsive dark UI** – collapsible sidebar on small screens, own messages aligned right, private messages highlighted
+- **Phòng chat** – người dùng vào phòng theo tên; phòng được tạo khi cần và không còn trong danh sách trực tuyến khi rỗng
+- **Tài khoản và xác thực** – username, tên phòng dài 2–20 ký tự (`A-Z a-z 0-9 _ -`); username duy nhất trên toàn hệ thống, không phân biệt chữ hoa/thường
+- **Đăng ký, đăng nhập và đăng xuất** – mật khẩu hash bằng bcryptjs; session lưu trong MySQL và được dùng để xác thực HTTP lẫn Socket.IO
+- **Danh sách phòng trực tuyến** – `GET /api/rooms` và sự kiện `rooms:update` gửi số người trong từng phòng
+- **Phát tin nhắn** – tin nhóm có ID cơ sở dữ liệu, người gửi, phòng và thời gian do máy chủ ghi nhận
+- **Tin hệ thống** – thông báo thành viên vào hoặc rời phòng
+- **Trạng thái đang nhập** – trạng thái của người dùng được chuyển tiếp đến các thành viên khác trong phòng
+- **Danh sách người trực tuyến** – cập nhật bằng `users:update`
+- **Lịch sử tin nhắn** – khi vào phòng, client nhận tối đa 100 tin nhóm gần nhất từ MySQL; tin riêng cũng được lưu trong MySQL nhưng không nằm trong lịch sử phòng chung
+- **Tin nhắn riêng** – `/pm <user> <message>` gửi tin đến một người nhận và phản hồi cho người gửi
+- **Đồng bộ sau reconnect** – client tham gia lại phòng, lấy các tin nhóm còn thiếu theo ID và tránh hiển thị trùng
+- **Offline Message Queue** – tin nhóm Pending được lưu trước trong IndexedDB và hiển thị trạng thái Pending/Sent/Failed; sau khi đồng bộ lịch sử, client gửi tuần tự với `clientMessageId` ổn định để server chống lưu trùng
+- **Truyền tệp** – hỗ trợ PNG/JPEG/GIF/WebP, PDF, TXT và DOCX tối đa 10 MB; metadata lưu trong MySQL, tải tệp qua endpoint cần xác thực
+- **An toàn nội dung và giới hạn tốc độ** – máy chủ escape HTML, giới hạn tin nhắn 500 ký tự, giới hạn tốc độ gửi tin và kiểm soát yêu cầu xác thực
+- **Trạng thái kết nối** – hiển thị online, mất kết nối và đang kết nối lại
+- **Giao diện tối tương thích màn hình nhỏ** – sidebar thu gọn được; tin của mình căn phải và tin riêng được làm nổi bật
 
-## UI at a glance
+## Giao diện tổng quan
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -56,10 +57,10 @@ length limits and rate-limits chat and authentication attempts.
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-The join screen is a centred card with username and room inputs, inline validation errors, and clickable
-chips showing the rooms that currently have people in them.
+Màn hình chọn phòng là một thẻ căn giữa, có ô nhập phòng, lỗi xác thực hiển thị ngay trên giao diện, các nút
+phòng đang hoạt động và nút Logout. Màn hình đăng nhập/đăng ký được hiển thị trước khi người dùng vào phòng.
 
-## Installation
+## Cài đặt
 
 ```powershell
 git clone https://github.com/gunjit-web/realtime-chat.git
@@ -68,15 +69,15 @@ npm install
 Copy-Item .env.example .env
 ```
 
-### MySQL setup on Windows
+### Thiết lập MySQL trên Windows
 
-1. Install and start MySQL Server. If it is already installed, open the Windows Services app and start the MySQL service if needed.
-2. Open MySQL Workbench and connect to your local MySQL Server. Before any schema changes, select **Server → Data Export**, select `realtime_chat`, choose **Dump Structure and Data** and **Export to Self-Contained File**, then click **Start Export**. Keep the resulting backup outside the project.
-3. Open `sql/init.sql` in Workbench and execute it if the database or original `messages` table has not been created yet.
-4. Review and apply the migration files in order in Workbench: `001_accounts_sessions.sql`, `002_files.sql`, then `003_message_idempotency.sql`. They add the account/session/file tables and nullable idempotency columns/index; they do not delete or rewrite existing `messages` rows. The app performs read-only schema checks and does not run migrations at startup.
-5. Copy `.env.example` to `.env`, then enter your MySQL host, port, username, password, and a new session secret. Do not commit `.env`.
+1. Cài đặt và khởi động MySQL Server. Nếu đã cài, mở **Services** của Windows và khởi động dịch vụ MySQL khi cần.
+2. Mở MySQL Workbench và kết nối đến MySQL Server trên máy. Trước khi đổi schema, chọn **Server → Data Export**, chọn `realtime_chat`, chọn **Dump Structure and Data** và **Export to Self-Contained File**, sau đó nhấn **Start Export**. Lưu bản sao lưu bên ngoài project.
+3. Nếu database hoặc bảng `messages` ban đầu chưa tồn tại, mở `sql/init.sql` trong Workbench và chạy file này.
+4. Đọc và chạy thủ công các migration theo thứ tự trong Workbench: `001_accounts_sessions.sql`, `002_files.sql`, rồi `003_message_idempotency.sql`. Các file này bổ sung bảng tài khoản/session/tệp và cột/index idempotency nullable; không xóa hay ghi lại các dòng `messages` cũ. Ứng dụng chỉ kiểm tra schema ở chế độ đọc và không tự chạy migration khi khởi động.
+5. Sao chép `.env.example` thành `.env`, rồi nhập host, port, username, password MySQL và một session secret mới. Không commit `.env`.
 
-Example `.env` for a local server:
+Ví dụ `.env` khi chạy máy chủ cục bộ:
 
 ```dotenv
 PORT=3000
@@ -88,21 +89,21 @@ DB_NAME=realtime_chat
 SESSION_SECRET=
 ```
 
-Generate a session secret locally in PowerShell with `node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"` and paste the output into `.env`. Never paste the generated value into source code or commit it. For localhost over HTTP the session cookie is HttpOnly and SameSite=Lax without Secure; production mode requires HTTPS for Secure cookies.
+Tạo session secret trong PowerShell bằng `node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"` rồi dán kết quả vào `.env`. Không ghi giá trị này vào source code hoặc commit. Khi dùng HTTP trên localhost, cookie session có HttpOnly và SameSite=Lax, không có Secure; khi dùng HTTPS, cookie được đánh dấu Secure.
 
-Start the app with `npm start`. It checks MySQL and the `users`/`sessions`/`files` tables before listening on port 3000. If a reviewed migration has not been run, startup fails without changing the database. A failed history read prevents joining, and a failed message write prevents broadcast and returns an error to the sender. `npm test` uses fake stores and does not require MySQL.
+Trên PowerShell, chạy `npm start` để khởi động ứng dụng. Ứng dụng kiểm tra MySQL và các bảng `users`/`sessions`/`files` trước khi lắng nghe cổng 3000. Nếu migration cần thiết chưa được chạy, ứng dụng dừng mà không thay đổi database. Nếu đọc lịch sử thất bại, người dùng không thể vào phòng; nếu lưu tin nhắn thất bại, tin không được broadcast và máy khách nhận lỗi. `npm test` dùng store giả lập và không cần kết nối MySQL.
 
-### File sharing
+### Chia sẻ tệp
 
-Review `sql/migrations/002_files.sql` and run it manually in MySQL Workbench after taking a backup. It only adds the `files` metadata table and does not modify existing rows or tables. The app does not run migrations automatically. Signed-in members of a room can attach PNG/JPEG/GIF/WebP images, PDF, TXT, or DOCX files up to 10 MB. File bytes are saved under the server's `uploads/` directory (or `UPLOADS_DIR` if configured); this directory is not public. Downloads go through the authenticated `/api/files/:id/download` endpoint and require an active connection in that file's room. File history and reconnect sync use file IDs separately from chat message IDs.
+Đọc `sql/migrations/002_files.sql` và chạy thủ công trong MySQL Workbench sau khi sao lưu. Migration chỉ bổ sung bảng metadata `files`, không sửa bảng hoặc dòng dữ liệu hiện có. Ứng dụng không tự chạy migration. Thành viên đã đăng nhập và đang ở trong phòng có thể gửi ảnh PNG/JPEG/GIF/WebP, PDF, TXT hoặc DOCX, tối đa 10 MB. Nội dung tệp lưu trong thư mục `uploads/` của máy chủ (hoặc `UPLOADS_DIR` nếu đã cấu hình); thư mục này không public. Tải xuống qua endpoint cần xác thực `/api/files/:id/download` và yêu cầu người dùng đang tham gia phòng chứa tệp. Lịch sử và đồng bộ tệp dùng ID riêng, độc lập với ID tin nhắn.
 
-After applying the reviewed migration, restart the app. Join a room and click **Attach file**. To demo with two clients, open `http://localhost:3000` in two browser profiles/windows, sign in as Alice and Bob, and join the same room. Upload from Alice; Bob should see the filename, size, and download control. Use the development disconnect controls on one client, send a file from the other while disconnected, then reconnect; the missed file should appear once. Do not copy files into `public/` or expose `uploads/` through a web server.
+Sau khi chạy migration đã kiểm tra, khởi động lại ứng dụng. Vào phòng và nhấn **Attach file**. Để demo hai máy khách trên laptop, mở `http://localhost:3000` trong hai hồ sơ/cửa sổ trình duyệt, đăng nhập Alice và Bob rồi vào cùng phòng. Gửi tệp từ Alice; Bob sẽ thấy tên, dung lượng và nút tải xuống. Dùng nút mô phỏng ngắt kết nối trong môi trường development, gửi tệp từ máy khách còn lại rồi kết nối lại; tệp bị lỡ sẽ xuất hiện một lần. Không chép tệp vào `public/` hoặc public thư mục `uploads/` qua web server.
 
-### Offline message queue and mobile HTTPS
+### Hàng đợi tin nhắn offline và HTTPS trên điện thoại
 
-Group-message drafts are stored in the browser's IndexedDB before the composer is cleared. Pending entries are partitioned by account ID and room. After reconnect, the client rejoins with its authenticated session, syncs room history, and then sends Pending messages sequentially. ACK retries reuse the same cryptographic UUID, and existing room/account boundaries still apply. The `/pm` flow remains online-only.
+Bản nháp tin nhóm được lưu trong IndexedDB trước khi xóa nội dung ô soạn. Hàng đợi Pending được phân tách theo ID tài khoản và phòng. Sau reconnect, client tham gia lại phòng bằng session đã xác thực, đồng bộ lịch sử rồi mới gửi lần lượt các tin Pending. Khi retry, ACK sử dụng lại UUID mật mã ban đầu; server chỉ xác nhận thành công sau khi MySQL lưu tin, và ID lặp không tạo bản ghi hoặc broadcast mới. Chat riêng bằng `/pm` không được xếp hàng offline.
 
-For a phone, `http://<laptop-LAN-IP>:3000` is not a secure browser context. `crypto.randomUUID()` and the offline queue require HTTPS (or localhost). The app can serve HTTPS directly when both `HTTPS_KEY_FILE` and `HTTPS_CERT_FILE` are set in `.env`; TLS also enables Secure session cookies. On Windows, a straightforward classroom setup is to use `mkcert` to make a certificate for the laptop's LAN IP and install its local CA certificate on the Android device:
+Khi truy cập từ điện thoại bằng `http://<laptop-LAN-IP>:3000`, trình duyệt không ở secure context. `crypto.randomUUID()` và hàng đợi offline cần HTTPS (hoặc localhost). Ứng dụng có thể tự phục vụ HTTPS khi đặt cả `HTTPS_KEY_FILE` và `HTTPS_CERT_FILE` trong `.env`; TLS cũng bật cookie session Secure. Trên Windows, có thể dùng `mkcert` tạo chứng thư cho IP LAN của laptop rồi cài CA cục bộ trên điện thoại Android:
 
 ```powershell
 mkcert -install
@@ -114,18 +115,22 @@ mkcert -key-file certs/laptop-key.pem -cert-file certs/laptop-cert.pem localhost
 mkcert -CAROOT
 ```
 
-Set these local `.env` values (paths are relative to the project directory):
+Đặt các giá trị `.env` sau (đường dẫn tính từ thư mục project):
 
 ```dotenv
 HTTPS_KEY_FILE=certs/laptop-key.pem
 HTTPS_CERT_FILE=certs/laptop-cert.pem
 ```
 
-Copy only `rootCA.pem` from the folder printed by `mkcert -CAROOT` to Android and install it under the device's certificate/security settings. Keep `rootCA-key.pem` and `laptop-key.pem` private; `certs/` is git-ignored. Start the app and open `https://<laptop-LAN-IP>:3000` on the phone. Both devices must be on the same Wi-Fi, and Windows Firewall must allow inbound TCP port 3000 on the private network. The browser should show a trusted HTTPS connection; dismissing a certificate warning does not make the page a reliable secure context.
+Chỉ chép `rootCA.pem` từ thư mục hiển thị bởi `mkcert -CAROOT` sang Android và cài trong phần cài đặt chứng thư/bảo mật của thiết bị. Giữ riêng `rootCA-key.pem` và `laptop-key.pem`; thư mục `certs/` đã được git-ignore. Khởi động ứng dụng rồi mở `https://<laptop-LAN-IP>:3000` trên điện thoại. Hai thiết bị phải cùng Wi-Fi và Windows Firewall phải cho phép kết nối đến TCP cổng 3000 trên mạng Private. Trình duyệt cần nhận diện HTTPS đáng tin cậy; bỏ qua cảnh báo chứng thư không đảm bảo trang được xem là secure context.
 
-The client checks `window.isSecureContext`, `crypto.randomUUID`/`crypto.getRandomValues`, and IndexedDB before queueing. If `randomUUID` is unavailable but secure `getRandomValues` exists, it creates UUID v4 from the cryptographic random source. If requirements are unavailable, it shows one clear warning and keeps the unsent text in the composer.
+Trước khi xếp hàng, client kiểm tra `window.isSecureContext`, `crypto.randomUUID`/`crypto.getRandomValues` và IndexedDB. Nếu không có `randomUUID` nhưng có `getRandomValues` an toàn, client tạo UUID v4 từ nguồn ngẫu nhiên mật mã. Nếu môi trường không đáp ứng yêu cầu, giao diện hiển thị một cảnh báo và giữ nguyên nội dung chưa gửi trong ô soạn.
 
-## Usage
+#### Truy cập qua Cloudflare Quick Tunnel
+
+Cloudflare Quick Tunnel có thể cung cấp HTTPS công khai và chuyển tiếp đến Node.js đang chạy HTTP trên cùng laptop. Khi `cloudflared` chạy trên máy chủ, ứng dụng chỉ tin các header proxy từ kết nối loopback; kiểm tra origin vẫn so khớp chính xác host và protocol bên ngoài. Không cần bật CORS wildcard hoặc cho phép mọi hostname `trycloudflare.com`. Giữ nguyên URL HTTPS của tunnel trong suốt phiên đăng nhập để cookie session và Socket.IO dùng cùng origin.
+
+## Cách sử dụng
 
 ```bash
 npm start            # http://localhost:3000
@@ -133,62 +138,62 @@ PORT=8080 npm start  # custom port
 npm run dev          # restarts on file changes (node --watch)
 ```
 
-Open the URL in two or more browser tabs, register or sign in with separate accounts, choose the same room, and start chatting.
-Type `/pm bob hello` to send a private message to `bob`.
+Mở URL trong ít nhất hai tab trình duyệt, đăng ký hoặc đăng nhập bằng các tài khoản riêng, chọn cùng phòng rồi bắt đầu trò chuyện.
+Nhập `/pm bob hello` để gửi tin riêng cho `bob`.
 
-### Demo Socket.IO reconnect on one laptop
+### Demo reconnect Socket.IO trên một laptop
 
-Start the app in PowerShell with development mode enabled:
+Trong PowerShell, bật chế độ development rồi chạy ứng dụng:
 
 ```powershell
 $env:NODE_ENV = 'development'
 npm start
 ```
 
-Open `http://localhost:3000` in two tabs or browser windows. Join the same room as `alice` in one
-client and `bob` in the other. In Alice's client, click **Simulate Disconnect**; only that browser's
-Socket.IO connection is closed. Send a few group messages from Bob, then click **Reconnect** in
-Alice's client. Alice rejoins and receives the missing room messages from MySQL, with message IDs
-preventing duplicates. The Node.js process and MySQL remain running. The test controls are shown only
-when `NODE_ENV=development`; they stay hidden in production and other modes.
+Mở `http://localhost:3000` trong hai tab hoặc cửa sổ trình duyệt. Cho Alice và Bob vào cùng một phòng. Trong máy khách
+của Alice, nhấn **Simulate Disconnect**; thao tác này chỉ ngắt Socket.IO của trình duyệt đó. Gửi vài tin nhóm từ Bob,
+sau đó nhấn **Reconnect** ở máy khách Alice. Alice tham gia lại phòng và nhận các tin còn thiếu từ MySQL; ID tin nhắn
+giúp loại bỏ bản trùng. Tiến trình Node.js và MySQL vẫn hoạt động. Các nút kiểm thử chỉ xuất hiện khi
+`NODE_ENV=development`, không hiển thị trong production hoặc chế độ khác.
 
-### HTTP endpoints
+### Các endpoint HTTP
 
-| Method | Path          | Description                                  |
+| Phương thức | Đường dẫn | Mô tả |
 |--------|---------------|----------------------------------------------|
-| GET    | `/`           | Chat client                                  |
-| GET    | `/api/rooms`  | `[{ "name": "general", "users": 3 }, ...]`   |
-| GET    | `/api/health` | `{ "status": "ok", "uptime": 12.3 }`         |
-| POST   | `/api/auth/register` | Create an account and sign in                 |
-| POST   | `/api/auth/login` | Sign in and rotate the session                   |
-| POST   | `/api/auth/logout` | Destroy the session and its active sockets     |
-| GET    | `/api/auth/me` | Return the current account                       |
-| POST   | `/api/rooms/:room/files` | Upload one allowed file (multipart field `file`, max 10 MB) |
-| GET    | `/api/files/:id/download` | Download a file after session and room-membership checks |
+| GET | `/` | Giao diện chat |
+| GET | `/api/rooms` | `[{ "name": "general", "users": 3 }, ...]` |
+| GET | `/api/health` | `{ "status": "ok", "uptime": 12.3 }` |
+| POST | `/api/auth/register` | Tạo tài khoản và đăng nhập |
+| POST | `/api/auth/login` | Đăng nhập và cấp session mới |
+| POST | `/api/auth/logout` | Hủy session và các socket đang hoạt động của session đó |
+| GET | `/api/auth/me` | Trả về tài khoản hiện tại |
+| POST | `/api/rooms/:room/files` | Tải lên một tệp được hỗ trợ (trường multipart `file`, tối đa 10 MB) |
+| GET | `/api/files/:id/download` | Tải tệp sau khi kiểm tra session và quyền thành viên phòng |
 
-## Socket event reference
+## Tham chiếu sự kiện Socket.IO
 
-### Client → server
+### Máy khách gửi đến máy chủ
 
-| Event     | Payload                        | Ack response                                                   |
+| Sự kiện | Payload | Phản hồi ACK |
 |-----------|--------------------------------|----------------------------------------------------------------|
-| `join`    | `{ room }`                      | `{ ok: true, username, room, history: Message[], files: FileMessage[] }` or `{ ok: false, error }` |
-| `message` | `{ text }`                     | `{ ok: true, id }` or `{ ok: false, error }`                   |
-| `files:sync` | `{ afterId }`                 | `{ ok: true, files: FileMessage[] }` for the joined room       |
-| `typing`  | `boolean`                      | none                                                           |
+| `join` | `{ room }` | `{ ok: true, username, room, history: Message[], files: FileMessage[] }` hoặc `{ ok: false, error }` |
+| `message` | `{ text, clientMessageId? }` | `{ ok: true, id }` hoặc `{ ok: false, error }` |
+| `messages:sync` | `{ afterId }` | `{ ok: true, messages: Message[] }` gồm tin nhóm mới hơn ID đã nhận trong phòng hiện tại |
+| `files:sync` | `{ afterId }` | `{ ok: true, files: FileMessage[] }` cho phòng đã tham gia |
+| `typing` | `boolean` | không có |
 
-`text` beginning with `/pm <user> ` is routed as a private message.
+`text` bắt đầu bằng `/pm <user> ` sẽ được xử lý như tin nhắn riêng. `clientMessageId` được dùng để chống lưu trùng khi gửi lại tin nhóm.
 
-### Server → client
+### Máy chủ gửi đến máy khách
 
-| Event          | Payload                                   | When                                              |
+| Sự kiện | Payload | Thời điểm gửi |
 |----------------|-------------------------------------------|---------------------------------------------------|
-| `message`      | `Message`                                 | Chat broadcast, private message, or system notice |
-| `rooms:update` | `[{ name, users }]`                       | On connect and whenever any room's membership changes |
-| `users:update` | `string[]` (sorted usernames)             | Sent to a room when someone joins or leaves it    |
-| `typing`       | `{ username, isTyping }`                  | Relayed to other members of the sender's room     |
+| `message` | `Message` | Tin nhóm, tin riêng gửi/nhận hoặc thông báo hệ thống |
+| `rooms:update` | `[{ name, users }]` | Khi kết nối và khi thành viên của phòng thay đổi |
+| `users:update` | `string[]` (username đã sắp xếp) | Gửi đến phòng khi có người vào hoặc rời phòng |
+| `typing` | `{ username, isTyping }` | Chuyển tiếp đến các thành viên khác trong phòng của người gửi |
 
-### Message shape
+### Cấu trúc Message
 
 ```js
 {
@@ -202,22 +207,27 @@ when `NODE_ENV=development`; they stay hidden in production and other modes.
 }
 ```
 
-## Running tests
+<a id="running-tests"></a>
 
-Integration tests spin up the real server on a random port and drive it with `socket.io-client`.
+## Chạy kiểm thử
+
+Kiểm thử tích hợp khởi chạy máy chủ thật trên một cổng ngẫu nhiên và kết nối bằng `socket.io-client`.
 
 ```bash
 npm test
 ```
 
-The suite covers authentication, cookie sessions, invalid Socket.IO connections, identity spoofing,
-joining and validation, room updates, message delivery, history, private messaging, file upload/download,
-file access checks, upload limits, invalid file data, and reconnect synchronization. Tests use in-memory
-stores and temporary upload folders; they do not run MySQL migrations.
+Bộ kiểm thử bao gồm đăng ký/đăng nhập/đăng xuất, session cookie, từ chối kết nối Socket.IO không hợp lệ,
+giả mạo danh tính, vào phòng và kiểm tra dữ liệu, cập nhật danh sách phòng, gửi tin, lịch sử, chat riêng,
+tải lên/tải xuống tệp, kiểm tra quyền truy cập, giới hạn dung lượng, dữ liệu tệp sai, đồng bộ reconnect,
+IndexedDB outbox và chống gửi trùng. Kiểm thử dùng store trong bộ nhớ và thư mục tải lên tạm; không chạy migration MySQL.
 
-## Project structure
+## Cấu trúc project
 
 ```
+
+Cây trên giữ cấu trúc tổng quát. Các module bổ sung hiện có gồm `public/message-id.js` để tạo ID tin nhắn an toàn và
+`tests/message-id.test.js` để kiểm tra module này.
 realtime-chat/
 ├── src/
 │   ├── index.js        # entry point, reads PORT
@@ -253,6 +263,6 @@ realtime-chat/
 └── README.md
 ```
 
-## License
+## Giấy phép sử dụng
 
 [MIT](LICENSE) © 2026 Gunjit

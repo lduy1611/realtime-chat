@@ -1,58 +1,53 @@
-# realtime-chat — Project Overview
+# realtime-chat — Tổng quan dự án
 
-A self-hosted, authenticated room chat server with a dependency-free browser
-client and an integration test suite that drives the real server over real sockets. This document
-explains *why* it exists, *how* it is built, and *what was learned* building it. For setup and the
-event reference see [README.md](README.md).
+Máy chủ chat theo phòng có xác thực, tự triển khai được, đi kèm client trình duyệt không cần thư viện giao diện
+bên ngoài và bộ kiểm thử tích hợp giao tiếp với máy chủ thật qua socket. Tài liệu này trình bày *lý do xây dựng*,
+*cách triển khai* và *kinh nghiệm rút ra*. Xem [README.md](README.md) để biết cách cài đặt và tra cứu sự kiện.
 
-## 1. Problem Statement
+## 1. Phát biểu bài toán
 
-Small teams, classrooms, hackathon groups and hobby communities regularly need a place to talk in
-real time, and the usual answers are a poor fit:
+Nhóm nhỏ, lớp học, nhóm hackathon và cộng đồng sở thích thường cần một kênh trao đổi thời gian thực. Các giải pháp
+phổ biến đôi khi không phù hợp:
 
-- **Heavyweight SaaS** (Slack, Discord, Teams) brings accounts, workspaces, invitations, billing and
-  data retention policies to what might be a two-hour need. Messages leave the organisation's
-  infrastructure and live on someone else's servers.
-- **HTTP polling** is the tempting "simple" alternative, but it burns bandwidth and server CPU
-  asking "anything new?" hundreds of times a minute, and still feels laggy.
-- **Naive WebSocket demos** typically broadcast whatever string the client sent straight into
-  `innerHTML`, allow anyone to claim any name, and let a single client flood the room. They are
-  trivially exploitable via XSS and spam the moment a second person connects.
+- **Dịch vụ SaaS nhiều tính năng** (Slack, Discord, Teams) thường đi kèm workspace, lời mời, thanh toán và chính sách
+  lưu trữ dữ liệu cho nhu cầu có thể chỉ kéo dài vài giờ. Tin nhắn rời khỏi hạ tầng của tổ chức và được lưu trên máy chủ bên ngoài.
+- **HTTP polling** có vẻ là lựa chọn "đơn giản", nhưng tiêu tốn băng thông và CPU khi liên tục hỏi máy chủ
+  "có gì mới không?", đồng thời vẫn tạo cảm giác trễ.
+- **Ví dụ WebSocket sơ sài** thường đưa trực tiếp chuỗi do client gửi vào `innerHTML`, cho phép tự nhận bất kỳ tên nào
+  và để một client gửi dồn dập. Cách làm đó dễ bị khai thác XSS và spam khi có người thứ hai tham gia.
 
-realtime-chat targets that gap: a server you can run locally, with MySQL-backed accounts, sessions
-and message history. Socket.IO pushes messages instead of polling, while the server treats every
-client-supplied value as untrusted.
+realtime-chat hướng đến nhu cầu này: máy chủ có thể chạy cục bộ, tài khoản, session và lịch sử tin nhắn được lưu bằng
+MySQL. Socket.IO chủ động đẩy dữ liệu thay cho polling; máy chủ xem mọi giá trị từ client là dữ liệu không đáng tin.
 
-## 2. Purpose & Goals
+## 2. Mục đích và mục tiêu
 
-The project was built to demonstrate that a production-minded real-time service can be small.
-Success criteria:
+Project minh họa rằng một dịch vụ thời gian thực có các biện pháp an toàn cơ bản vẫn có thể gọn nhẹ.
+Các tiêu chí đạt được:
 
-| Goal | How it is met |
+| Mục tiêu | Cách đáp ứng |
 |------|---------------|
-| Simple local setup | Express, Socket.IO and MySQL; settings are read from `.env` |
-| Authenticated identity | Usernames are unique accounts; Socket.IO identity comes from the server session |
-| Push, not poll | Socket.IO transports (WebSocket with long-polling fallback) |
-| Safe by default | Server-side `escapeHtml`, 500-char cap, name regex, 5 msg/s per socket |
-| Durable room history | Last 100 room messages are loaded from MySQL in the `join` acknowledgement |
-| Verifiable behaviour | Jest integration tests against a real listening server and isolated test stores |
+| Khởi động cục bộ đơn giản | Express, Socket.IO và MySQL; cấu hình được đọc từ `.env` |
+| Danh tính đã xác thực | Tài khoản có username duy nhất; danh tính Socket.IO lấy từ session phía máy chủ |
+| Đẩy dữ liệu thay cho polling | Socket.IO dùng WebSocket và có long-polling làm phương án dự phòng |
+| An toàn mặc định | `sanitizeMessage` escape HTML, giới hạn 500 ký tự, regex kiểm tra tên và giới hạn 5 tin/giây/socket |
+| Lịch sử phòng bền vững | Tin nhóm lưu trong MySQL; `join` trả tối đa 100 tin gần nhất, còn `messages:sync` lấy tin mới hơn cursor |
+| Hành vi có thể kiểm chứng | Kiểm thử tích hợp Jest chạy máy chủ thật và store kiểm thử biệt lập |
 
-## 3. Who It's For / Use Cases
+## 3. Đối tượng và tình huống sử dụng
 
-1. **Workshop or classroom backchannel** — an instructor runs `npm start` on a laptop; students join
-   `#questions` by first name. Nothing to sign up for, and the chat vanishes when the process stops.
-2. **Hackathon team room** — a team on a shared LAN wants a low-friction channel without inviting
-   everyone to a corporate Slack. `/pm` covers quick side conversations.
-3. **Internal tool inside a restricted network** — an organisation that cannot send chat data to
-   third-party clouds deploys it behind its own reverse proxy.
-4. **Support/watch-party overlay** — a streamer or event host embeds a throwaway room for the
-   duration of a session; the bounded history and rate limiter keep it usable under load.
-5. **Reference implementation** — engineers learning Socket.IO get a compact, tested example of
-   rooms, acknowledgements, per-socket state and cleanup on disconnect.
+1. **Trao đổi trong lớp học hoặc workshop** – giảng viên chạy `npm start` trên laptop; sinh viên đăng nhập và cùng vào
+   phòng `#questions`. Lịch sử tin nhóm được lưu trong MySQL sau khi máy chủ dừng.
+2. **Phòng nhóm hackathon** – nhóm dùng chung LAN có kênh trao đổi riêng mà không cần mời toàn bộ thành viên vào dịch vụ khác.
+   `/pm` hỗ trợ trao đổi nhanh giữa hai người.
+3. **Công cụ nội bộ trong mạng hạn chế** – tổ chức không thể gửi dữ liệu chat lên dịch vụ đám mây bên ngoài có thể đặt ứng dụng
+   sau reverse proxy được kiểm soát.
+4. **Kênh trao đổi cho sự kiện** – người tổ chức tạo phòng trong thời gian diễn ra sự kiện; lịch sử giới hạn và rate limiter
+   giúp duy trì khả năng sử dụng.
+5. **Tài liệu tham khảo** – người học Socket.IO có ví dụ gọn, có kiểm thử về phòng, ACK, trạng thái từng socket và dọn dẹp khi ngắt kết nối.
 
-## 4. How It Works
+## 4. Cơ chế hoạt động
 
-### Architecture
+### Kiến trúc
 
 ```
  Browser tab (public/app.js)            Node process (src/)
@@ -67,142 +62,131 @@ Success criteria:
         └───────────────────────────────────┴──────────────────────────────────────┘
 ```
 
-`src/index.js` is a five-line entry point; `createServer()` in `src/server.js` builds the Express
-app, HTTP server, Socket.IO instance and `RoomStore` *without* binding a port, so tests can call it
-with custom limits and listen on port `0`.
+Sơ đồ trên tóm tắt luồng kết nối. Trong triển khai hiện tại, `RoomStore` chỉ quản lý thành viên trực tuyến; lịch sử tin nhắn nhóm
+và riêng được lưu trong MySQL, không nằm trong map của `RoomStore`.
 
-### Event flow
+`src/index.js` là điểm khởi chạy ứng dụng: nạp cấu hình, kiểm tra kết nối/schema MySQL và tạo server. Hàm `createServer()`
+trong `src/server.js` tạo Express app, HTTP hoặc HTTPS server, Socket.IO và `RoomStore` mà chưa mở cổng; nhờ vậy test có
+thể truyền giới hạn tùy chỉnh và lắng nghe trên cổng `0`. `RoomStore` chỉ giữ thành viên trực tuyến; lịch sử tin nhắn nằm trong MySQL.
 
-**join** — client emits `join {room}` with an ack callback. Socket.IO has already authenticated
-the session. Username and account ID come from that session, never from the join payload. The server
-validates the room, rejects a socket or account already in the room, stores the authenticated identity
-on `socket.data`, calls `rooms.join()` and `socket.join()`, acks with
-`{ ok, username, room, history }`, and fans out three things: a `system` message to *other* members
-(`socket.to(room)`), `users:update` to the room, and `rooms:update` to everyone.
+### Luồng sự kiện
 
-**message** — guarded in order: joined? → `limiter.allow()`? → is it a `/pm`? → `sanitizeMessage`.
-A chat message is saved to MySQL with a database id and server timestamp, then emitted to the whole
-room including the sender. The ack returns `{ ok: true, id }` so the client can correlate. Failed
-writes are not broadcast, so clients are not told an unsaved message was accepted.
+**join** – client gửi `join {room}` cùng callback ACK. Middleware Socket.IO xác thực session trước đó. Username và ID tài khoản
+lấy từ session, không lấy từ payload `join`. Máy chủ kiểm tra tên phòng, ngăn tài khoản đang hoạt động ở phòng mở thêm kết nối
+không hợp lệ, lưu danh tính đã xác thực trong `socket.data`, gọi `rooms.join()` và `socket.join()`, rồi ACK kèm
+`{ ok, username, room, history }`. Khi vào phòng mới, máy chủ gửi thông báo `system` đến các thành viên khác bằng
+`socket.to(room)`, gửi `users:update` cho phòng và `rooms:update` cho mọi client. Khi cùng session reconnect, socket cũ chỉ được
+thay thế khi client cung cấp đúng ID socket trước đó.
 
-**typing** — a bare boolean; relayed as `{ username, isTyping }` via `socket.to(room)` so the
-sender never sees their own indicator. The client debounces before sending `false`. On disconnect
-the server emits `isTyping: false` on the user's behalf so stale "alice is typing…" lines cannot
-linger.
+**message** – máy chủ kiểm tra theo thứ tự: đã vào phòng chưa, giới hạn tốc độ, nội dung có phải lệnh `/pm` không, sau đó
+kiểm tra bằng `sanitizeMessage`. Tin nhóm được lưu vào MySQL với ID database và thời gian máy chủ trước khi phát đến cả phòng,
+kể cả người gửi. ACK trả `{ ok: true, id }`. Với tin nhóm có `clientMessageId`, máy chủ kiểm tra tin đã lưu trước đó; nếu cùng
+tài khoản gửi lại đúng nội dung/phòng thì trả ID cũ và không broadcast lại. Lỗi ghi MySQL không được broadcast.
 
-**private message** — any text matching `PM_RE = /^\/pm\s+(\S+)\s+([\s\S]+)$/` goes to
-`sendPrivate()`. It resolves the target with `rooms.findSocketId()` (case-insensitive), refuses
-unknown users and self-messages, resolves the live target to an account ID, saves the message to
-MySQL, then emits a `type: 'private'` message
-to exactly two sockets: `io.to(targetId)` and the sender. Private messages are excluded from room
-history queries.
+**typing** – client gửi giá trị boolean; máy chủ chuyển tiếp `{ username, isTyping }` bằng `socket.to(room)` nên người gửi
+không nhận trạng thái của chính mình. Client debounce trước khi gửi `false`. Khi ngắt kết nối, máy chủ thay người dùng gửi
+`isTyping: false` để trạng thái cũ không bị giữ lại.
 
-**disconnect** — `rooms.leave()` drops the member and deletes the room when empty; a `system`
-leave notice, a typing reset, `users:update` and `rooms:update` follow.
+**private message** – nội dung khớp `PM_RE = /^\/pm\s+(\S+)\s+([\s\S]+)$/` được xử lý bởi `sendPrivate()`.
+Máy chủ tìm người nhận đang trực tuyến trong phòng (không phân biệt hoa/thường), từ chối người nhận không tồn tại hoặc tự gửi
+cho chính mình, lưu tin riêng vào MySQL rồi gửi `type: 'private'` đến socket của người nhận và người gửi. Tin riêng không xuất
+hiện trong truy vấn lịch sử chung của phòng; hiện chưa có giao diện đồng bộ lịch sử tin riêng sau reconnect.
 
-### In-memory state model (`src/rooms.js`)
+**disconnect** – `rooms.leave()` loại thành viên khỏi phòng và xóa phòng khỏi danh sách khi phòng rỗng; tiếp theo máy chủ gửi
+thông báo rời phòng, reset trạng thái typing, cập nhật `users:update` và `rooms:update`.
+
+### Mô hình trạng thái trong bộ nhớ (`src/rooms.js`)
 
 ```
 RoomStore.rooms : Map<roomName, { users: Map<socketId, { id, username }> }>
 ```
 
-Keying members by socket id makes disconnect cleanup O(1) and makes "which socket is bob?" a
-linear scan over a small map. Message history is stored separately through the parameterised MySQL
-queries in `src/messages.js`.
-`summary()` and `users()` return sorted arrays so the UI is stable across updates.
+Lưu thành viên theo socket ID giúp tra cứu và dọn socket cụ thể khi ngắt kết nối; việc tìm socket của một username là phép duyệt
+qua map thành viên đang hoạt động. Bản ghi thành viên cũng chứa ID session để hỗ trợ phân biệt reconnect cùng session với phiên
+đăng nhập khác. Lịch sử tin nhắn được truy vấn riêng bằng SQL có tham số trong `src/messages.js`. `summary()` và `users()` trả về
+các mảng đã sắp xếp để giao diện ổn định giữa các lần cập nhật.
 
-### Key design decisions
+### Các quyết định thiết kế chính
 
-- **Unique usernames per room, not globally.** Identity without accounts only needs to be
-  unambiguous inside a conversation. `hasUsername` compares lower-cased so `Bob` and `bob` cannot
-  coexist, while the same name may be used in different rooms.
-- **Escape on the server, once.** `sanitizeMessage` trims, enforces the 500-character cap and
-  HTML-escapes before the message is stored or broadcast. Every consumer, including history
-  replay, receives already-safe text; the client relies on this before using `innerHTML` for chat
-  bubbles, and uses `textContent` for everything else.
-- **Per-socket sliding-window rate limiting.** Each connection gets its own `RateLimiter` instance
-  in `socket.data.limiter`; `allow()` prunes timestamps older than `windowMs` and rejects the
-  sixth message within a second with a clear error in the ack rather than silently dropping.
-- **Durable history.** MySQL stores chat and private messages; each room join reads only the latest
-  configured number of group messages. Private records are excluded from room history queries.
-- **System messages as first-class messages.** Join/leave notices share the `Message` shape
-  (`type: 'system'`) so the client has one render path and one ordering by `id`.
-- **Acknowledgement callbacks for request/response interactions.** `join` and `message` use
-  Socket.IO acks instead of separate error events, which keeps client code linear and makes the
-  tests read like ordinary `await` calls.
+- **Username duy nhất toàn hệ thống.** Tài khoản được lưu trong bảng `users`; username được kiểm tra không phân biệt hoa/thường.
+  Một tài khoản chỉ có một socket hoạt động trong cùng phòng, ngoại trừ trường hợp socket cũ cùng session được thay thế khi reconnect.
+- **Escape ở máy chủ.** `sanitizeMessage` cắt khoảng trắng, giới hạn 500 ký tự và escape HTML trước khi lưu hoặc phát tin. Lịch sử
+  MySQL cũng trả văn bản đã xử lý; client dùng `innerHTML` cho nội dung chat đã escape và dùng `textContent` cho nội dung khác.
+- **Giới hạn tốc độ dạng cửa sổ trượt theo socket.** Mỗi kết nối có một `RateLimiter` trong `socket.data.limiter`; `allow()` loại
+  timestamp cũ hơn `windowMs` và từ chối tin vượt giới hạn bằng lỗi trong ACK.
+- **Lịch sử bền vững.** MySQL lưu tin nhóm lẫn tin riêng. Khi `join`, ứng dụng đọc tối đa số tin nhóm được cấu hình (mặc định 100);
+  `messages:sync` đọc các tin nhóm có ID lớn hơn cursor và không áp dụng giới hạn 100 tin. Tin riêng bị loại khỏi lịch sử phòng chung.
+- **Thông báo hệ thống tạm thời.** Thông báo vào/rời phòng dùng dạng message `type: 'system'` để tái sử dụng luồng hiển thị,
+  nhưng không phải bản ghi lịch sử MySQL.
+- **ACK cho tương tác request/response.** `join` và `message` dùng ACK của Socket.IO thay vì sự kiện lỗi riêng, giúp luồng client
+  tuyến tính và test có thể `await` như lời gọi thông thường.
+- **Offline Message Queue có idempotency.** IndexedDB giữ tin nhóm Pending theo tài khoản/phòng. Client đợi đồng bộ lịch sử xong mới
+  flush tuần tự; `clientMessageId` ổn định giúp retry an toàn khi ACK bị mất.
 
-### One message, end to end
+### Vòng đời một tin nhắn
 
-1. Alice types `hello <world>` and presses Enter. `public/app.js` clears the typing timer, emits
-   `typing false`, then `socket.emit('message', { text }, cb)`.
-2. `server.js` finds `socket.data.room === 'general'`, `limiter.allow()` returns true, the text
-   does not match `PM_RE`.
-3. `sanitizeMessage` returns `{ text: 'hello &lt;world&gt;' }`.
-4. The parameterised MySQL insert saves the chat and returns its database id.
-5. The server builds `{ id, type: 'chat', room: 'general', timestamp, from, text }` and emits it
-   with `io.to('general')` after the insert succeeds.
-6. The ack `{ ok: true, id: 42 }` returns to Alice. Every tab in `general` (hers included) runs
-   `appendMessage`, aligning the bubble right if `m.from === state.username`.
-7. Carol joins a minute later and receives message 42 in `history` from her `join` ack.
+1. Alice nhập `hello <world>` rồi nhấn Enter. `public/app.js` dừng timer typing và tạo UUID `clientMessageId` an toàn.
+2. Client lưu bản nháp vào IndexedDB trước khi xóa nội dung ô nhập; bản ghi bắt đầu ở trạng thái Pending và gắn với tài khoản/phòng.
+3. Nếu đang kết nối, client gửi `message` kèm `clientMessageId`. `server.js` xác nhận socket đã vào phòng và kiểm tra rate limit.
+4. `sanitizeMessage` trả `{ text: 'hello &lt;world&gt;' }`; truy vấn MySQL có tham số lưu tin và trả ID database.
+5. Sau khi lưu thành công, máy chủ tạo `{ id, type: 'chat', room: 'general', timestamp, from, text }`, broadcast bằng
+   `io.to('general')` rồi gửi ACK `{ ok: true, id }`.
+6. Các máy khách trong phòng hiển thị tin theo ID; client Alice đối chiếu `clientMessageId` để cập nhật dòng Pending thành Sent
+   mà không thêm bản sao khi nhận cả event lẫn ACK.
+7. Nếu ACK bị mất, client gửi lại cùng `clientMessageId`. Máy chủ trả ID đã lưu, không tạo bản ghi hoặc broadcast lần nữa.
+8. Carol vào phòng sau đó sẽ nhận tối đa 100 tin gần nhất trong ACK `join`; các tin có ID mới hơn cursor được lấy bằng `messages:sync`.
 
-## 5. Tech Stack & Why
+## 5. Công nghệ sử dụng và lý do lựa chọn
 
-| Layer | Choice | Why |
+| Tầng | Công nghệ | Lý do |
 |-------|--------|-----|
-| Runtime | Node.js ≥ 18 | Single language across server, client and tests; `node --watch` for dev |
-| HTTP | Express 4 | Static files, authentication APIs and room/health endpoints |
-| Real-time | Socket.IO 4 | Rooms, acks, auto-reconnect and transport fallback out of the box; a raw `ws` server would need all four re-implemented |
-| Client | Vanilla HTML/CSS/JS | No build step; the whole UI is three files a reviewer can read in minutes |
-| State | MySQL + in-memory online membership | Persistent messages with low-latency presence and socket lookups |
-| Authentication | `bcryptjs`, `express-session`, MySQL session store | Bcrypt password hashes and server-side sessions with HttpOnly cookies |
-| Tests | Jest + `socket.io-client` | Exercises APIs and the same Socket.IO wire protocol browsers use |
+| Runtime | Node.js ≥ 18 | Dùng chung một ngôn ngữ cho máy chủ, client và kiểm thử; hỗ trợ `node --watch` khi phát triển |
+| HTTP | Express 4 | Phục vụ file tĩnh, API xác thực, phòng và health check |
+| Thời gian thực | Socket.IO 4 | Có sẵn phòng, ACK, tự reconnect và dự phòng transport; nếu dùng `ws` thuần phải tự xây các phần này |
+| Client | HTML/CSS/JS thuần | Không cần bước build; giao diện dễ đọc và kiểm tra trực tiếp |
+| Trạng thái | MySQL và danh sách thành viên trong bộ nhớ | Tin nhắn được lưu bền vững; trạng thái online và tra cứu socket có độ trễ thấp |
+| Xác thực | `bcryptjs`, `express-session`, MySQL session store | Hash mật khẩu bcrypt và lưu session phía máy chủ với cookie HttpOnly |
+| Tải tệp | Multer và thư mục lưu trữ riêng | Kiểm tra giới hạn, loại tệp và quyền trước khi cung cấp tải xuống có xác thực |
+| Hàng đợi offline | IndexedDB và `clientMessageId` | Lưu tin nhóm Pending trong trình duyệt và retry idempotent sau reconnect |
+| Kiểm thử | Jest và `socket.io-client` | Kiểm thử API và giao thức Socket.IO mà trình duyệt sử dụng |
 
-## 6. Testing & Quality
+## 6. Kiểm thử và chất lượng
 
-`tests/auth.test.js` covers account APIs, session cookies and authenticated sockets. `tests/chat.test.js`
-uses an injected fake message store, and `tests/messages.test.js` verifies parameterised query
-construction and row mapping. Together the suite contains **34 tests**. Tests use isolated memory
-session/user stores and do not run the MySQL migration. The chat suite calls `createServer({ messageStore, userStore, sessionMiddleware })` and listens on
-port `0`; each test connects real `socket.io-client` instances to the assigned port, so routing,
-acks and room scoping are verified over an actual socket rather than through mocks.
+`tests/auth.test.js` kiểm tra API tài khoản, cookie session và socket đã xác thực. `tests/chat.test.js` dùng message store giả lập;
+`tests/messages.test.js` kiểm tra truy vấn có tham số và ánh xạ dòng kết quả; `tests/files.test.js` kiểm tra truyền tệp;
+`tests/outbox.test.js` và `tests/message-id.test.js` kiểm tra hàng đợi cùng ID an toàn. Test dùng store session/người dùng trong bộ nhớ
+và không chạy migration MySQL. Bộ test chat gọi `createServer({ messageStore, userStore, sessionMiddleware })` rồi lắng nghe trên
+cổng `0`; mỗi test kết nối client `socket.io-client` thật đến cổng được cấp, nhờ đó kiểm tra routing, ACK và phạm vi phòng trên
+socket thật thay vì chỉ dùng mock.
 
-Coverage includes account registration, password hashing, login/logout, session cookies, origin
-checks, unauthenticated Socket.IO rejection, spoofed identity payloads, room membership, chat and PM
-routing, persistence errors, reconnect synchronization, and parameterised message queries.
+Các nội dung được kiểm tra gồm đăng ký tài khoản, hash mật khẩu, login/logout, session cookie, kiểm tra origin, từ chối Socket.IO
+chưa xác thực, payload giả mạo danh tính, thành viên phòng, định tuyến chat nhóm và PM, lỗi lưu trữ, reconnect, ACK mất, gửi trùng,
+phân tách hàng đợi theo tài khoản/phòng, truyền tệp và truy vấn SQL có tham số.
 
-Run with `npm test` (`jest --runInBand --forceExit`; tests run serially because they share one
-server instance).
+Chạy bằng `npm test` (`jest --runInBand --forceExit`; các test chạy tuần tự vì dùng chung một server trong từng bộ kiểm thử).
 
-## 7. Challenges & Learnings
+## 7. Thách thức và kinh nghiệm
 
-- **Testing real-time code without flakiness.** Asserting on events that have not arrived yet is
-  the classic trap. The suite wraps every signal in a promise: `once(client, event)`, a filtering
-  `onceType(client, type)` for `message` payloads, and `emit()` returning the ack,
-  so tests await concrete signals instead of sleeping.
-- **Where to escape.** Escaping on the client is the common tutorial answer but leaves history,
-  private messages and any future non-browser consumer unprotected. Moving it into
-  `sanitizeMessage` and storing escaped text made the invariant "anything in `RoomStore` is safe
-  to render" hold everywhere, at the cost of the client needing `innerHTML` for chat text only.
-- **`socket.to()` versus `io.to()`.** They differ by exactly one recipient, the sender, and the
-  right choice changes per event: chat messages use `io.to` so the sender sees their own bubble
-  from the server's copy; typing and system notices use `socket.to`. Getting this wrong produces
-  either duplicate bubbles or "you joined the room" notices.
-- **Cleanup is most of the work.** The disconnect handler has to undo membership, fix the room
-  list, fix the user list and cancel typing state. Keeping all per-connection state on
-  `socket.data` (including the limiter) meant nothing needed a separate lookup table to tear down.
+- **Kiểm thử thời gian thực ổn định.** Lỗi thường gặp là kiểm tra sự kiện trước khi nó đến. Bộ test bọc tín hiệu bằng promise:
+  `once(client, event)`, `onceType(client, type)` để lọc payload `message`, và `emit()` để nhận ACK; nhờ đó test chờ tín hiệu cụ thể
+  thay vì ngủ một khoảng thời gian cố định.
+- **Vị trí escape dữ liệu.** Chỉ escape ở client sẽ không bảo vệ lịch sử, tin riêng hoặc các loại client khác. Đưa xử lý vào
+  `sanitizeMessage` trước khi lưu/phát giúp mọi client nhận nội dung an toàn; client chỉ dùng `innerHTML` cho tin chat đã escape.
+- **`socket.to()` và `io.to()`.** Hai phương thức khác nhau ở việc có gửi lại cho người gửi hay không. Tin chat dùng `io.to` để
+  người gửi nhận bản tin từ server; typing và thông báo phòng dùng `socket.to`. Chọn sai có thể tạo bong bóng trùng hoặc thông báo
+  người gửi tự tham gia phòng.
+- **Dọn dẹp khi ngắt kết nối.** Handler disconnect phải xóa thành viên, cập nhật danh sách phòng/người dùng và reset typing. Lưu
+  trạng thái từng kết nối trong `socket.data` (bao gồm rate limiter và session ID) giúp dọn đúng socket khi rời hoặc reconnect.
+- **Retry cần idempotency.** ACK có thể mất sau khi database đã lưu tin. Giữ nguyên `clientMessageId`, kiểm tra nội dung/phòng ở
+  máy chủ và không broadcast lại giúp retry mà không nhân đôi bản ghi hoặc tin hiển thị.
 
-## 8. Future Improvements
+## 8. Hướng phát triển có thể xem xét
 
-- **Private history UI** — add a private-conversation view if users should browse saved PMs after
-  reconnecting; stored private messages are not currently loaded into the room transcript.
-- **Authentication** — optional JWT or magic-link sign-in for deployments that need stable
-  identities, while keeping anonymous mode for throwaway rooms.
-- **Horizontal scaling** — use `@socket.io/redis-adapter` and move `RoomStore` to Redis so
-  multiple Node instances share rooms, presence and rate-limit counters.
-- **Richer messages** — Markdown-lite formatting, link previews and file attachments with
-  server-side size and type checks.
-- **Moderation** — room owners, kick/mute, word filters, and an audit log endpoint.
-- **Operational hardening** — structured logging, Prometheus metrics, CORS and origin checks on
-  the Socket.IO handshake, and a Dockerfile.
-- **Client polish** — unread counters per room, desktop notifications, message search over
-  history, and an accessibility pass on keyboard navigation.
+- **Giao diện lịch sử tin riêng** – thêm màn hình cuộc trò chuyện riêng nếu cần xem lại PM đã lưu sau reconnect; hiện tại PM không
+  được nạp vào transcript phòng chung.
+- **Mở rộng ngang** – dùng `@socket.io/redis-adapter` và chuyển `RoomStore` sang Redis để nhiều tiến trình Node chia sẻ phòng,
+  presence và bộ đếm rate limit.
+- **Định dạng tin nhắn phong phú hơn** – cân nhắc Markdown giới hạn, xem trước liên kết hoặc phản ứng tin nhắn.
+- **Kiểm duyệt** – bổ sung chủ phòng, kick/mute, bộ lọc từ khóa và endpoint nhật ký kiểm toán.
+- **Tăng cường vận hành** – logging có cấu trúc, metric Prometheus, kiểm tra origin cho handshake Socket.IO và Dockerfile.
+- **Hoàn thiện client** – bộ đếm tin chưa đọc, thông báo desktop, tìm kiếm lịch sử và cải thiện khả năng truy cập bằng bàn phím.
