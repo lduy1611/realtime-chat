@@ -38,12 +38,12 @@ class TestMessageStore {
     return this.messages
       .filter((message) => message.type === 'chat' && message.room === room)
       .slice(-limit)
-      .map(({ id, type, room: messageRoom, timestamp, from, text }) => ({ id, type, room: messageRoom, timestamp, from, text }));
+      .map(({ id, type, room: messageRoom, timestamp, from, text, clientMessageId }) => ({ id, type, room: messageRoom, timestamp, from, text, clientMessageId: clientMessageId ?? null }));
   }
   async getRoomMessagesAfter(room, afterId) {
     return this.messages
       .filter((message) => message.type === 'chat' && message.room === room && message.id > afterId)
-      .map(({ id, type, room: messageRoom, timestamp, from, text }) => ({ id, type, room: messageRoom, timestamp, from, text }));
+      .map(({ id, type, room: messageRoom, timestamp, from, text, clientMessageId }) => ({ id, type, room: messageRoom, timestamp, from, text, clientMessageId: clientMessageId ?? null }));
   }
 }
 

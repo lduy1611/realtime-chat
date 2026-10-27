@@ -46,7 +46,7 @@ class MessageStore {
 
   async getRoomHistory(room, limit) {
     const [rows] = await this.pool.execute(
-      'SELECT id, type, room, sender, text, created_at_ms AS timestamp FROM messages WHERE room = ? AND type = ? ORDER BY id DESC LIMIT ?',
+      'SELECT id, type, room, sender, client_message_id AS clientMessageId, text, created_at_ms AS timestamp FROM messages WHERE room = ? AND type = ? ORDER BY id DESC LIMIT ?',
       [room, 'chat', limit]
     );
     return rows.reverse().map((row) => ({
@@ -55,13 +55,14 @@ class MessageStore {
       room: row.room,
       timestamp: Number(row.timestamp),
       from: row.sender,
+      clientMessageId: row.clientMessageId ?? null,
       text: row.text
     }));
   }
 
   async getRoomMessagesAfter(room, afterId) {
     const [rows] = await this.pool.execute(
-      'SELECT id, type, room, sender, text, created_at_ms AS timestamp FROM messages WHERE room = ? AND type = ? AND id > ? ORDER BY id ASC',
+      'SELECT id, type, room, sender, client_message_id AS clientMessageId, text, created_at_ms AS timestamp FROM messages WHERE room = ? AND type = ? AND id > ? ORDER BY id ASC',
       [room, 'chat', afterId]
     );
     return rows.map((row) => ({
@@ -70,6 +71,7 @@ class MessageStore {
       room: row.room,
       timestamp: Number(row.timestamp),
       from: row.sender,
+      clientMessageId: row.clientMessageId ?? null,
       text: row.text
     }));
   }

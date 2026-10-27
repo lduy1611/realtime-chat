@@ -3,6 +3,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const socket = io({ autoConnect: false });
+  const outbox = window.ChatOutbox.createOutbox();
 
   const el = {
     authScreen: $('auth-screen'),
@@ -43,13 +44,49 @@
 
   const state = {
     username: null, userId: null, room: null, typing: new Set(), typingTimer: null, isTyping: false,
-    seenMessageIds: new Set(), lastMessageId: 0, seenFileIds: new Set(), lastFileId: 0, developmentMode: false
+    seenMessageIds: new Set(), messageRowsByClientId: new Map(), lastMessageId: 0,
+    seenFileIds: new Set(), lastFileId: 0, developmentMode: false
   };
 
   const formatTime = (ts) =>
     new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   // ---- rendering -------------------------------------------------------
+
+  const outboxKey = (clientMessageId) => `${String(state.userId)}:${clientMessageId}`;
+
+  function setDeliveryStatus(row, status, error) {
+    let badge = row.querySelector('.delivery-status');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'delivery-status';
+      row.querySelector('.meta').appendChild(badge);
+    }
+    badge.className = `delivery-status ${status}`;
+    badge.textContent = status[0].toUpperCase() + status.slice(1);
+    badge.title = error || '';
+  }
+
+  function markOutboxSent(clientMessageId, serverMessageId) {
+    if (serverMessageId != null) {
+      const id = Number(serverMessageId);
+      if (Number.isSafeInteger(id) && id > 0) {
+        state.seenMessageIds.add(String(serverMessageId));
+        if (id > state.lastMessageId) state.lastMessageId = id;
+      }
+    }
+    const row = state.messageRowsByClientId.get(outboxKey(clientMessageId));
+    if (row) {
+      if (serverMessageId != null) row.dataset.serverMessageId = String(serverMessageId);
+      setDeliveryStatus(row, 'sent');
+    }
+    outbox.markSent(clientMessageId, state.userId, serverMessageId)
+      .catch(() => localNotice('Could not update the local message status.', 'error'));
+  }
+
+  function escapeMessageText(text) {
+    return String(text).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+  }
 
   function renderRooms(rooms) {
     el.roomList.innerHTML = '';
@@ -106,6 +143,20 @@
       state.seenMessageIds.add(key);
       if (Number.isSafeInteger(id) && id > state.lastMessageId) state.lastMessageId = id;
     }
+    const ownClientMessage = m.type === 'chat' && m.clientMessageId && m.from === state.username;
+    if (ownClientMessage) {
+      const localKey = outboxKey(m.clientMessageId);
+      const existingRow = state.messageRowsByClientId.get(localKey);
+      if (existingRow) {
+        existingRow.dataset.serverMessageId = String(m.id);
+        existingRow.querySelector('.bubble').innerHTML = m.text;
+        const time = existingRow.querySelector('.time');
+        if (time) time.textContent = formatTime(m.timestamp);
+        setDeliveryStatus(existingRow, 'sent');
+        markOutboxSent(m.clientMessageId, m.id);
+        return;
+      }
+    }
     if (m.type === 'file' && m.id != null) {
       const id = Number(m.id);
       const key = String(m.id);
@@ -136,7 +187,15 @@
       time.className = 'time';
       time.textContent = formatTime(m.timestamp);
       meta.append(from, time);
+      if (m.type === 'chat' && m.from === state.username && m.clientMessageId) {
+        li.dataset.clientMessageId = m.clientMessageId;
+        if (m.id != null) li.dataset.serverMessageId = String(m.id);
+        state.messageRowsByClientId.set(outboxKey(m.clientMessageId), li);
+      }
       li.appendChild(meta);
+      if (m.type === 'chat' && m.from === state.username && m.clientMessageId) {
+        setDeliveryStatus(li, m.status || 'sent', m.lastError);
+      }
       if (m.type === 'file') {
         const name = document.createElement('span');
         name.className = 'file-name';
@@ -179,7 +238,7 @@
     e.preventDefault();
     el.joinError.textContent = '';
     const room = el.room.value.trim();
-    socket.emit('join', { room }, (res) => {
+    socket.emit('join', { room }, async (res) => {
       if (!res.ok) { el.joinError.textContent = res.error; return; }
       state.username = res.username;
       state.room = res.room;
@@ -188,10 +247,31 @@
       el.me.textContent = res.username;
       el.messages.innerHTML = '';
       state.seenMessageIds.clear();
+      state.messageRowsByClientId.clear();
       state.lastMessageId = 0;
       state.seenFileIds.clear();
       state.lastFileId = 0;
-      renderStoredMessages([...(res.history || []), ...(res.files || [])]);
+      const history = res.history || [];
+      const persistedClientIds = new Set(history.map((message) => message.clientMessageId).filter(Boolean));
+      let queued = [];
+      try {
+        queued = await outbox.listForRoom(state.userId, state.room);
+        for (const item of queued) {
+          if (persistedClientIds.has(item.clientMessageId)) {
+            await outbox.markSent(item.clientMessageId, state.userId, history.find((message) => message.clientMessageId === item.clientMessageId)?.id);
+          }
+        }
+      } catch (_) {
+        localNotice('Could not restore this account’s local message queue.', 'error');
+      }
+      const localMessages = queued
+        .filter((item) => item.status !== 'sent' && !persistedClientIds.has(item.clientMessageId))
+        .map((item) => ({
+          id: null, type: 'chat', clientMessageId: item.clientMessageId, room: item.room,
+          timestamp: item.createdAt, from: state.username, text: escapeMessageText(item.text),
+          status: item.status, lastError: item.lastError
+        }));
+      renderStoredMessages([...history, ...(res.files || []), ...localMessages]);
       localNotice('You joined #' + res.room);
       el.joinScreen.classList.add('hidden');
       el.chatScreen.classList.remove('hidden');
@@ -224,15 +304,74 @@
 
   // ---- messaging -------------------------------------------------------
 
-  el.messageForm.addEventListener('submit', (e) => {
+  function updateOutboxRow(clientMessageId, status, error) {
+    const row = state.messageRowsByClientId.get(outboxKey(clientMessageId));
+    if (row) setDeliveryStatus(row, status, error);
+  }
+
+  async function sendQueuedMessage(record) {
+    if (!socket.connected || record.userId !== String(state.userId) || record.room !== state.room) return;
+    try {
+      const attempted = await outbox.markAttempt(record.clientMessageId, state.userId);
+      if (!attempted || !socket.connected) return;
+      socket.volatile.timeout(8000).emit('message', {
+        text: attempted.text,
+        clientMessageId: attempted.clientMessageId
+      }, async (timeoutError, response) => {
+        if (timeoutError) return; // Keep Pending; a later stage will add explicit queue flushing.
+        if (response && response.ok) {
+          markOutboxSent(attempted.clientMessageId, response.id);
+          return;
+        }
+        const error = response?.error || 'Message was rejected by the server';
+        try { await outbox.markFailed(attempted.clientMessageId, state.userId, error); } catch (_) { /* Keep the visible failure state. */ }
+        updateOutboxRow(attempted.clientMessageId, 'failed', error);
+      });
+    } catch (_) {
+      localNotice('Could not update the local message queue; the message remains Pending.', 'error');
+    }
+  }
+
+  function newClientMessageId() {
+    if (!window.crypto?.randomUUID) throw new Error('This browser cannot create a secure message ID');
+    return window.crypto.randomUUID();
+  }
+
+  el.messageForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = el.messageInput.value.trim();
     if (!text) return;
-    socket.emit('message', { text }, (res) => {
-      if (!res.ok) localNotice(res.error, 'error');
-    });
+    const privateCommand = text.match(/^\/pm\s+(\S+)\s+([\s\S]+)$/);
+    if (privateCommand) {
+      if (!socket.connected) {
+        localNotice('Private messages cannot be queued while disconnected.', 'error');
+        return;
+      }
+      socket.emit('message', { text }, (response) => {
+        if (!response.ok) localNotice(response.error, 'error');
+      });
+      el.messageInput.value = '';
+      stopTyping();
+      return;
+    }
+
+    let record;
+    try {
+      record = await outbox.enqueue({
+        clientMessageId: newClientMessageId(), userId: state.userId,
+        room: state.room, text, createdAt: Date.now()
+      });
+    } catch (error) {
+      localNotice(`Could not save the message locally. Your text is still in the input. ${error.message}`, 'error');
+      return;
+    }
     el.messageInput.value = '';
     stopTyping();
+    appendMessage({
+      id: null, type: 'chat', clientMessageId: record.clientMessageId, room: record.room,
+      timestamp: record.createdAt, from: state.username, text: escapeMessageText(record.text), status: 'pending'
+    });
+    if (socket.connected) await sendQueuedMessage(record);
   });
 
   el.fileButton.addEventListener('click', () => el.fileInput.click());

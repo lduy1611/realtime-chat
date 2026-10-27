@@ -98,6 +98,10 @@ Review `sql/migrations/002_files.sql` and run it manually in MySQL Workbench aft
 
 After applying the reviewed migration, restart the app. Join a room and click **Attach file**. To demo with two clients, open `http://localhost:3000` in two browser profiles/windows, sign in as Alice and Bob, and join the same room. Upload from Alice; Bob should see the filename, size, and download control. Use the development disconnect controls on one client, send a file from the other while disconnected, then reconnect; the missed file should appear once. Do not copy files into `public/` or expose `uploads/` through a web server.
 
+### Offline message queue (Stage 2)
+
+Group-message drafts are stored in the browser's IndexedDB before the composer is cleared. Pending entries are partitioned by account ID and room and return when that account joins that room again. Online sends show Pending until the database ACK changes them to Sent; explicit server rejection shows Failed. This stage deliberately does not send already-pending entries automatically after reconnect. The `/pm` flow remains online-only.
+
 ## Usage
 
 ```bash
@@ -206,11 +210,13 @@ realtime-chat/
 ├── public/
 │   ├── index.html      # join + chat screens
 │   ├── style.css       # dark, responsive theme
-│   └── app.js          # client logic
+│   ├── app.js          # client logic
+│   └── outbox.js       # IndexedDB group-message queue
 ├── tests/
 │   ├── auth.test.js    # authentication and Socket.IO authorization tests
 │   ├── chat.test.js    # Socket.IO integration tests using a fake store
 │   ├── files.test.js   # authenticated file upload, download, and sync tests
+│   ├── outbox.test.js  # IndexedDB persistence, partitioning, and reload tests
 │   └── messages.test.js # message store query tests
 ├── sql/
 │   ├── init.sql        # original database and messages table setup

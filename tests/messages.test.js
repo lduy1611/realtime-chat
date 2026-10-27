@@ -57,8 +57,8 @@ describe('MessageStore', () => {
 
   test('loads legacy room history rows that have no idempotency metadata', async () => {
     const rows = [
-      { id: 2, type: 'chat', room: 'general', sender: 'bob', text: 'second', timestamp: 2000 },
-      { id: 1, type: 'chat', room: 'general', sender: 'alice', text: 'first', timestamp: 1000 }
+      { id: 2, type: 'chat', room: 'general', sender: 'bob', clientMessageId: null, text: 'second', timestamp: 2000 },
+      { id: 1, type: 'chat', room: 'general', sender: 'alice', clientMessageId: 'c8418fb5-8bde-4a4c-a6bb-930e34e47af2', text: 'first', timestamp: 1000 }
     ];
     const execute = jest.fn().mockResolvedValue([rows]);
     const store = new MessageStore({ execute });
@@ -66,16 +66,16 @@ describe('MessageStore', () => {
     expect(execute.mock.calls[0][0]).toContain('WHERE room = ? AND type = ?');
     expect(execute.mock.calls[0][1]).toEqual(['general', 'chat', 100]);
     expect(history.map((message) => message.text)).toEqual(['first', 'second']);
-    expect(history[0]).toMatchObject({ id: 1, from: 'alice', timestamp: 1000 });
+    expect(history[0]).toMatchObject({ id: 1, from: 'alice', clientMessageId: 'c8418fb5-8bde-4a4c-a6bb-930e34e47af2', timestamp: 1000 });
   });
 
   test('queries only group messages newer than the reconnect cursor', async () => {
-    const rows = [{ id: 9, type: 'chat', room: 'general', sender: 'bob', text: 'missed', timestamp: 9000 }];
+    const rows = [{ id: 9, type: 'chat', room: 'general', sender: 'bob', clientMessageId: 'b7b068d5-a88f-49a0-9e09-dc59349bd341', text: 'missed', timestamp: 9000 }];
     const execute = jest.fn().mockResolvedValue([rows]);
     const store = new MessageStore({ execute });
     const messages = await store.getRoomMessagesAfter('general', 8);
     expect(execute.mock.calls[0][0]).toContain('WHERE room = ? AND type = ? AND id > ? ORDER BY id ASC');
     expect(execute.mock.calls[0][1]).toEqual(['general', 'chat', 8]);
-    expect(messages).toMatchObject([{ id: 9, room: 'general', from: 'bob', text: 'missed' }]);
+    expect(messages).toMatchObject([{ id: 9, room: 'general', from: 'bob', clientMessageId: 'b7b068d5-a88f-49a0-9e09-dc59349bd341', text: 'missed' }]);
   });
 });

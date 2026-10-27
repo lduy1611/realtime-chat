@@ -210,6 +210,10 @@ input:focus { border-color: var(--accent); }
 .msg.own .bubble { background: var(--accent); color: #fff; border-radius: 12px; border-top-right-radius: 4px; }
 .msg.private .bubble { border: 1px solid var(--pm); background: transparent; color: var(--fg); }
 .msg.private .meta .from { color: var(--pm); }
+.delivery-status { font-size: 0.7rem; font-weight: 600; }
+.delivery-status.pending { color: var(--muted); }
+.delivery-status.sent { color: var(--success); }
+.delivery-status.failed { color: var(--danger); }
 .msg.file .bubble { display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap; }
 .file-name { font-weight: 600; }
 .file-size { color: var(--muted); font-size: 0.8rem; }
