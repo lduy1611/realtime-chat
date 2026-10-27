@@ -3,7 +3,7 @@
 const http = require('http');
 const { io: Client } = require('socket.io-client');
 const { createServer } = require('../src/server');
-const { createSession } = require('../src/auth');
+const { createSession, sameOrigin } = require('../src/auth');
 const { TestUserStore, TestFileStore, createTestSession } = require('./helpers');
 
 let httpServer;
@@ -12,8 +12,8 @@ let url;
 let userStore;
 const clients = [];
 
-const request = (method, path, payload, cookie) => new Promise((resolve, reject) => {
-  const headers = { Origin: url };
+const request = (method, path, payload, cookie, extraHeaders = {}) => new Promise((resolve, reject) => {
+  const headers = { Origin: url, ...extraHeaders };
   if (payload) headers['Content-Type'] = 'application/json';
   if (cookie) headers.Cookie = cookie;
   const req = http.request(url + path, { method, headers }, (res) => {
@@ -118,6 +118,85 @@ describe('authentication API', () => {
     });
     expect(originalUrl).toBe(url);
     expect(requestResult.status).toBe(403);
+  });
+
+  test('accepts the exact HTTPS origin forwarded by a loopback proxy and keeps its secure session', async () => {
+    const tunnelHost = 'specific-tunnel.example.test';
+    const proxyHeaders = {
+      Origin: `https://${tunnelHost}`,
+      'X-Forwarded-Host': tunnelHost,
+      'X-Forwarded-Proto': 'https'
+    };
+    const registered = await request('POST', '/api/auth/register', { username: 'alice', password: 'correct horse 1' }, null, proxyHeaders);
+    expect(registered.status).toBe(201);
+    expect(registered.setCookie).toContain('Secure');
+
+    const loggedIn = await request('POST', '/api/auth/login', { username: 'alice', password: 'correct horse 1' }, null, proxyHeaders);
+    expect(loggedIn.status).toBe(200);
+    expect(loggedIn.setCookie).toContain('Secure');
+
+    const oldSocket = Client(url, {
+      forceNew: true, transports: ['websocket'],
+      extraHeaders: { Cookie: loggedIn.cookie, 'X-Forwarded-Host': tunnelHost, 'X-Forwarded-Proto': 'https' }
+    });
+    clients.push(oldSocket);
+    await new Promise((resolve) => oldSocket.once('connect', resolve));
+    expect(await new Promise((resolve) => oldSocket.emit('join', { room: 'general' }, resolve))).toMatchObject({ ok: true });
+
+    const disconnected = new Promise((resolve) => oldSocket.once('disconnect', resolve));
+    const resumedSocket = Client(url, {
+      forceNew: true, transports: ['websocket'],
+      extraHeaders: { Cookie: loggedIn.cookie, 'X-Forwarded-Host': tunnelHost, 'X-Forwarded-Proto': 'https' }
+    });
+    clients.push(resumedSocket);
+    await new Promise((resolve) => resumedSocket.once('connect', resolve));
+    const resumed = await new Promise((resolve) => resumedSocket.emit('join', { room: 'general', previousSocketId: oldSocket.id }, resolve));
+    expect(resumed.ok).toBe(true);
+    expect(await disconnected).toBe('io server disconnect');
+
+    const logoutDisconnect = new Promise((resolve) => resumedSocket.once('disconnect', resolve));
+    const logout = await request('POST', '/api/auth/logout', {}, loggedIn.cookie, proxyHeaders);
+    expect(logout.status).toBe(200);
+    expect(logout.setCookie).toContain('Secure');
+    expect(await logoutDisconnect).toBe('io server disconnect');
+  });
+
+  test.each(['https://attacker.example', 'https://some-other.trycloudflare.com'])(
+    'does not accept non-app Origin %s just because this is a tunnel request', async (origin) => {
+      const response = await request('POST', '/api/auth/register', { username: 'alice', password: 'correct horse 1' }, null, {
+        Origin: origin,
+        'X-Forwarded-Host': 'specific-tunnel.trycloudflare.com',
+        'X-Forwarded-Proto': 'https'
+      });
+      expect(response.status).toBe(403);
+      expect(response.body.error).toBe('Cross-origin request denied');
+      expect(userStore.users).toHaveLength(0);
+    }
+  );
+
+  test('ignores forwarded headers when the immediate peer is not loopback', () => {
+    let nextCalled = false;
+    let statusCode;
+    let responseBody;
+    const request = {
+      socket: { remoteAddress: '203.0.113.25' },
+      protocol: 'http',
+      app: { get: () => () => false },
+      get: (name) => ({
+        origin: 'http://app.example.test',
+        host: 'app.example.test',
+        'x-forwarded-host': 'attacker.example',
+        'x-forwarded-proto': 'https'
+      }[name.toLowerCase()])
+    };
+    const response = {
+      status(code) { statusCode = code; return this; },
+      json(body) { responseBody = body; return this; }
+    };
+    sameOrigin(request, response, () => { nextCalled = true; });
+    expect(nextCalled).toBe(true);
+    expect(statusCode).toBeUndefined();
+    expect(responseBody).toBeUndefined();
   });
 });
 

@@ -1,6 +1,7 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -27,7 +28,12 @@ function makeMessage(type, room, fields) {
  */
 function createServer(options = {}) {
   const app = express();
-  const httpServer = http.createServer(app);
+  // cloudflared connects from this host to localhost. Trust forwarded host and
+  // protocol headers only when the immediate peer is loopback, never any proxy.
+  app.set('trust proxy', 'loopback');
+  const httpServer = options.httpsOptions
+    ? https.createServer(options.httpsOptions, app)
+    : http.createServer(app);
   const io = new Server(httpServer);
   const rooms = new RoomStore({ historyLimit: options.historyLimit });
   const messageStore = options.messageStore;
@@ -217,17 +223,47 @@ function createServer(options = {}) {
 
       const err = validateName(room, 'Room');
       if (err) return reply({ ok: false, error: err });
-      if (socket.data.room || socket.data.joining) return reply({ ok: false, error: 'Already joined a room' });
-
       const roomName = room.trim();
-      if (rooms.hasUser(roomName, socket.data.userId)) {
-        return reply({ ok: false, error: 'This account is already in this room' });
+      if (socket.data.joining) return reply({ ok: false, error: 'Room join is already in progress', code: 'JOIN_IN_PROGRESS', retryable: true });
+      if (socket.data.room) {
+        if (socket.data.room !== roomName) return reply({ ok: false, error: 'Already joined a room' });
+        try {
+          const [history, files] = await Promise.all([
+            messageStore.getRoomHistory(roomName, rooms.historyLimit),
+            fileStore ? fileStore.getRoomHistory(roomName, rooms.historyLimit) : Promise.resolve([])
+          ]);
+          return reply({ ok: true, username: socket.data.username, room: roomName, history, files });
+        } catch (error) {
+          console.error('Failed to reload room history:', error);
+          return reply({ ok: false, error: 'Could not load chat history. Please try again.' });
+        }
+      }
+
+      const existingMember = rooms.findMemberByUserId(roomName, socket.data.userId);
+      if (existingMember) {
+        // A mobile transport can be half-open while its client has already
+        // reconnected. Replace only the exact previous socket reported by that
+        // client and only within the same authenticated session. This keeps
+        // separate tabs/sessions from evicting one another.
+        const previousSocketId = typeof payload?.previousSocketId === 'string' ? payload.previousSocketId : null;
+        if (existingMember.sessionId !== socket.data.sessionId || existingMember.socketId !== previousSocketId) {
+          return reply({ ok: false, error: 'This account is already in this room' });
+        }
+        const previousSocket = io.sockets.sockets.get(existingMember.socketId);
+        if (previousSocket && previousSocket.id !== socket.id) previousSocket.disconnect(true);
+        else if (!previousSocket) {
+          rooms.leave(roomName, existingMember.socketId);
+          broadcastUsers(roomName);
+          broadcastRooms();
+        } else {
+          return reply({ ok: false, error: 'Already joined a room' });
+        }
       }
 
       const { username, userId } = socket.data;
       socket.data.joining = true;
       socket.data.room = roomName;
-      rooms.join(roomName, socket.id, { id: userId, username });
+      rooms.join(roomName, socket.id, { id: userId, username, sessionId: socket.data.sessionId });
       socket.join(roomName);
 
       let history;
@@ -244,6 +280,13 @@ function createServer(options = {}) {
         delete socket.data.joining;
         console.error('Failed to load room history:', error);
         return reply({ ok: false, error: 'Could not load chat history. Please try again.' });
+      }
+      if (!socket.connected) {
+        rooms.leave(roomName, socket.id);
+        socket.leave(roomName);
+        delete socket.data.room;
+        delete socket.data.joining;
+        return;
       }
       delete socket.data.joining;
 
@@ -283,13 +326,14 @@ function createServer(options = {}) {
             }
           } catch (error) {
             console.error('Failed to check message retry:', error);
-            return reply({ ok: false, error: 'Message status could not be checked. Please retry.' });
+            return reply({ ok: false, error: 'Message status could not be checked. Please retry.', code: 'PERSISTENCE_ERROR', retryable: true });
           }
         }
       }
 
       if (!socket.data.limiter.allow()) {
-        return reply({ ok: false, error: 'You are sending messages too quickly' });
+        const limited = { ok: false, error: 'You are sending messages too quickly' };
+        return reply(pm ? limited : { ...limited, code: 'RATE_LIMITED', retryAfterMs: rateLimit.windowMs });
       }
       if (pm) return sendPrivate(socket, pm[1], pm[2], clientMessageId, reply);
 
@@ -312,7 +356,7 @@ function createServer(options = {}) {
           return reply({ ok: false, error: 'Client message ID conflicts with a previously saved message', code: 'MESSAGE_ID_CONFLICT' });
         }
         console.error('Failed to save room message:', error);
-        reply({ ok: false, error: 'Message could not be saved. Please try again.' });
+        reply({ ok: false, error: 'Message could not be saved. Please try again.', code: 'PERSISTENCE_ERROR', retryable: true });
       }
     });
 

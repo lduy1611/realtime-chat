@@ -19,13 +19,20 @@ class RoomStore {
   }
 
   hasUser(room, userId) {
-    const r = this.rooms.get(room);
-    if (!r) return false;
-    return [...r.users.values()].some((user) => String(user.id) === String(userId));
+    return Boolean(this.findMemberByUserId(room, userId));
   }
 
   join(room, socketId, user) {
-    this._get(room).users.set(socketId, { id: user.id, username: user.username });
+    this._get(room).users.set(socketId, { id: user.id, username: user.username, sessionId: user.sessionId });
+  }
+
+  findMemberByUserId(room, userId) {
+    const r = this.rooms.get(room);
+    if (!r) return null;
+    for (const [socketId, user] of r.users) {
+      if (String(user.id) === String(userId)) return { ...user, socketId };
+    }
+    return null;
   }
 
   leave(room, socketId) {

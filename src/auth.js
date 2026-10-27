@@ -10,7 +10,7 @@ const SESSION_COOKIE = 'realtime-chat.sid';
 const SESSION_MAX_AGE = 8 * 60 * 60 * 1000;
 const BCRYPT_ROUNDS = 12;
 
-function createSession({ store, secret = process.env.SESSION_SECRET, nodeEnv = process.env.NODE_ENV, env = process.env } = {}) {
+function createSession({ store, secret = process.env.SESSION_SECRET, nodeEnv = process.env.NODE_ENV, secureCookies, env = process.env } = {}) {
   if (!secret || secret.length < 32) {
     throw new Error('SESSION_SECRET must be set to a random value with at least 32 characters');
   }
@@ -40,7 +40,7 @@ function createSession({ store, secret = process.env.SESSION_SECRET, nodeEnv = p
     cookie: {
       httpOnly: true,
       sameSite: 'lax',
-      secure: nodeEnv === 'production',
+      secure: secureCookies ?? (nodeEnv === 'production' ? true : 'auto'),
       maxAge: SESSION_MAX_AGE,
       path: '/'
     }
@@ -58,7 +58,16 @@ function sameOrigin(req, res, next) {
   if (!origin) return res.status(403).json({ error: 'Request origin is required' });
   try {
     const parsed = new URL(origin);
-    if (parsed.host !== req.get('host') || parsed.protocol !== `${req.protocol}:`) {
+    if (parsed.origin === 'null' || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.username || parsed.password) {
+      return res.status(403).json({ error: 'Invalid request origin' });
+    }
+    const trustProxy = req.app?.get('trust proxy fn');
+    const remoteAddress = req.socket?.remoteAddress || req.connection?.remoteAddress;
+    const canTrustForwardedHost = typeof trustProxy === 'function' && remoteAddress && trustProxy(remoteAddress, 0);
+    const forwardedHost = canTrustForwardedHost ? req.get('x-forwarded-host') : null;
+    const requestHost = (forwardedHost || req.get('host') || '').split(',')[0].trim();
+    const requestOrigin = new URL(`${req.protocol}://${requestHost}`).origin;
+    if (parsed.origin !== requestOrigin) {
       return res.status(403).json({ error: 'Cross-origin request denied' });
     }
   } catch (_) {
@@ -147,7 +156,7 @@ function installAuthRoutes(app, { userStore, io }) {
       }
     }
     if (sessionId) io.in(`session:${sessionId}`).disconnectSockets(true);
-    res.clearCookie(SESSION_COOKIE, { httpOnly: true, sameSite: 'lax', secure: req.app.get('env') === 'production', path: '/' });
+    res.clearCookie(SESSION_COOKIE, { httpOnly: true, sameSite: 'lax', secure: req.secure || req.app.get('env') === 'production', path: '/' });
     res.json({ ok: true });
   });
 }

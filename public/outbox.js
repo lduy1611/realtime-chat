@@ -10,6 +10,8 @@
 
   function createOutbox({ indexedDB = globalThis.indexedDB, IDBKeyRange = globalThis.IDBKeyRange, dbName = 'realtime-chat-outbox' } = {}) {
     let dbPromise;
+    let flushTail = Promise.resolve();
+    let lastAttemptAt = 0;
 
     function open() {
       if (!indexedDB) return Promise.reject(new Error('IndexedDB is not available in this browser'));
@@ -91,6 +93,82 @@
       });
     }
 
+    function flushPending({
+      userId, room, onlyClientMessageIds, isCurrent = () => true, send,
+      onStatus = () => {}, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      minSendIntervalMs = 350, maxAttempts = 5, baseRetryMs = 500, maxRetryMs = 5000
+    }) {
+      if (typeof send !== 'function') return Promise.reject(new Error('A message sender is required'));
+      const run = async () => {
+        const records = await listForRoom(userId, room);
+        const selected = onlyClientMessageIds ? new Set(onlyClientMessageIds) : null;
+        const report = { sent: 0, failed: 0, remaining: 0, stopped: false };
+
+        for (let index = 0; index < records.length; index++) {
+          const record = records[index];
+          if (record.status !== 'pending' || (selected && !selected.has(record.clientMessageId))) continue;
+          if (!isCurrent()) { report.stopped = true; break; }
+
+          let finished = false;
+          for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            if (!isCurrent()) { report.stopped = true; break; }
+            const pacingDelay = Math.max(0, minSendIntervalMs - (Date.now() - lastAttemptAt));
+            if (pacingDelay) await wait(pacingDelay);
+            if (!isCurrent()) { report.stopped = true; break; }
+
+            const attempted = await update(record.clientMessageId, userId, (current) => ({
+              ...current, status: 'pending', retryCount: current.retryCount + 1, lastError: null
+            }));
+            if (!attempted) { finished = true; break; }
+            onStatus(attempted, 'pending');
+            lastAttemptAt = Date.now();
+
+            let response;
+            try { response = await send(attempted); }
+            catch (error) { response = { retryable: true, error: error.message || 'Network error' }; }
+
+            if (response && response.ok === true && response.id != null) {
+              const saved = await update(record.clientMessageId, userId, (current) => ({
+                ...current, status: 'sent', serverMessageId: Number(response.id), lastError: null
+              }));
+              if (saved) onStatus(saved, 'sent');
+              report.sent++;
+              finished = true;
+              break;
+            }
+            if (response?.stopped) { report.stopped = true; break; }
+
+            if (response?.code === 'RATE_LIMITED' || response?.retryable || response?.timeout) {
+              if (attempt + 1 >= maxAttempts) break;
+              const backoff = Math.min(maxRetryMs, baseRetryMs * (2 ** attempt));
+              await wait(Math.max(Number(response.retryAfterMs) || 0, backoff));
+              continue;
+            }
+
+            const error = response?.error || 'Message was rejected by the server';
+            const failed = await update(record.clientMessageId, userId, (current) => ({
+              ...current, status: 'failed', lastError: String(error).slice(0, 500)
+            }));
+            if (failed) onStatus(failed, 'failed', error);
+            report.failed++;
+            finished = true;
+            break;
+          }
+
+          if (report.stopped) break;
+          if (!finished) {
+            report.remaining = records.slice(index).filter((item) => item.status === 'pending' && (!selected || selected.has(item.clientMessageId))).length;
+            break; // Preserve ordering while the oldest result is uncertain.
+          }
+        }
+        return report;
+      };
+
+      const operation = flushTail.then(run, run);
+      flushTail = operation.catch(() => {});
+      return operation;
+    }
+
     return {
       enqueue,
       listForRoom,
@@ -103,6 +181,7 @@
       markFailed(clientMessageId, userId, error) {
         return update(clientMessageId, userId, (record) => ({ ...record, status: 'failed', lastError: String(error || 'Message was rejected').slice(0, 500) }));
       },
+      flushPending,
       get,
       close: async () => { if (dbPromise) (await dbPromise).close(); dbPromise = null; }
     };

@@ -98,9 +98,32 @@ Review `sql/migrations/002_files.sql` and run it manually in MySQL Workbench aft
 
 After applying the reviewed migration, restart the app. Join a room and click **Attach file**. To demo with two clients, open `http://localhost:3000` in two browser profiles/windows, sign in as Alice and Bob, and join the same room. Upload from Alice; Bob should see the filename, size, and download control. Use the development disconnect controls on one client, send a file from the other while disconnected, then reconnect; the missed file should appear once. Do not copy files into `public/` or expose `uploads/` through a web server.
 
-### Offline message queue (Stage 2)
+### Offline message queue and mobile HTTPS
 
-Group-message drafts are stored in the browser's IndexedDB before the composer is cleared. Pending entries are partitioned by account ID and room and return when that account joins that room again. Online sends show Pending until the database ACK changes them to Sent; explicit server rejection shows Failed. This stage deliberately does not send already-pending entries automatically after reconnect. The `/pm` flow remains online-only.
+Group-message drafts are stored in the browser's IndexedDB before the composer is cleared. Pending entries are partitioned by account ID and room. After reconnect, the client rejoins with its authenticated session, syncs room history, and then sends Pending messages sequentially. ACK retries reuse the same cryptographic UUID, and existing room/account boundaries still apply. The `/pm` flow remains online-only.
+
+For a phone, `http://<laptop-LAN-IP>:3000` is not a secure browser context. `crypto.randomUUID()` and the offline queue require HTTPS (or localhost). The app can serve HTTPS directly when both `HTTPS_KEY_FILE` and `HTTPS_CERT_FILE` are set in `.env`; TLS also enables Secure session cookies. On Windows, a straightforward classroom setup is to use `mkcert` to make a certificate for the laptop's LAN IP and install its local CA certificate on the Android device:
+
+```powershell
+mkcert -install
+New-Item -ItemType Directory -Force certs
+$lanIp = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias 'Wi-Fi' |
+  Where-Object { $_.IPAddress -notlike '169.254*' -and $_.IPAddress -ne '127.0.0.1' } |
+  Select-Object -First 1 -ExpandProperty IPAddress
+mkcert -key-file certs/laptop-key.pem -cert-file certs/laptop-cert.pem localhost 127.0.0.1 $lanIp
+mkcert -CAROOT
+```
+
+Set these local `.env` values (paths are relative to the project directory):
+
+```dotenv
+HTTPS_KEY_FILE=certs/laptop-key.pem
+HTTPS_CERT_FILE=certs/laptop-cert.pem
+```
+
+Copy only `rootCA.pem` from the folder printed by `mkcert -CAROOT` to Android and install it under the device's certificate/security settings. Keep `rootCA-key.pem` and `laptop-key.pem` private; `certs/` is git-ignored. Start the app and open `https://<laptop-LAN-IP>:3000` on the phone. Both devices must be on the same Wi-Fi, and Windows Firewall must allow inbound TCP port 3000 on the private network. The browser should show a trusted HTTPS connection; dismissing a certificate warning does not make the page a reliable secure context.
+
+The client checks `window.isSecureContext`, `crypto.randomUUID`/`crypto.getRandomValues`, and IndexedDB before queueing. If `randomUUID` is unavailable but secure `getRandomValues` exists, it creates UUID v4 from the cryptographic random source. If requirements are unavailable, it shows one clear warning and keeps the unsent text in the composer.
 
 ## Usage
 

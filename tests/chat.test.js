@@ -7,6 +7,7 @@ const { TestUserStore, TestFileStore, createTestSession } = require('./helpers')
 
 let httpServer;
 let io;
+let rooms;
 let url;
 const clients = [];
 let messageStore;
@@ -107,7 +108,7 @@ beforeEach((done) => {
   userStore = new TestUserStore();
   fileStore = new TestFileStore();
   ({ sessionMiddleware } = createTestSession());
-  ({ httpServer, io } = createServer({
+  ({ httpServer, io, rooms } = createServer({
     messageStore, fileStore, userStore, sessionMiddleware, historyLimit: 5,
     rateLimit: { limit: 3, windowMs: 1000 }
   }));
@@ -149,9 +150,48 @@ describe('join', () => {
     const a = await connect('alice');
     const b = await connectExisting('alice');
     await join(a, 'alice', 'general');
-    const res = await join(b, 'ALICE', 'general');
+    const res = await emit(b, 'join', { username: 'ALICE', room: 'general', previousSocketId: a.id });
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/already in this room/);
+  });
+
+  test('treats a repeated join on the same live socket as idempotent', async () => {
+    const client = await connect('alice');
+    expect((await join(client, 'alice', 'general')).ok).toBe(true);
+    const repeated = await join(client, 'alice', 'general');
+    expect(repeated).toMatchObject({ ok: true, username: 'alice', room: 'general' });
+    expect((await getJson('/api/rooms')).body).toEqual([{ name: 'general', users: 1 }]);
+  });
+
+  test('replaces a half-open socket only when the reconnect presents its previous socket ID and same session', async () => {
+    const account = await apiRequest('/api/auth/register', { username: 'alice', password: 'TestPassword123!' });
+    const oldSocket = await openSocket(account.cookie);
+    expect((await join(oldSocket, 'alice', 'general')).ok).toBe(true);
+    const disconnected = once(oldSocket, 'disconnect');
+    const resumedSocket = await openSocket(account.cookie);
+    const result = await emit(resumedSocket, 'join', { room: 'general', previousSocketId: oldSocket.id });
+
+    expect(result).toMatchObject({ ok: true, username: 'alice', room: 'general' });
+    expect(await disconnected).toBe('io server disconnect');
+    expect((await getJson('/api/rooms')).body).toEqual([{ name: 'general', users: 1 }]);
+  });
+
+  test('cleans a stale room entry when the old socket is already gone', async () => {
+    const account = await apiRequest('/api/auth/register', { username: 'alice', password: 'TestPassword123!' });
+    const oldSocket = await openSocket(account.cookie);
+    await join(oldSocket, 'alice', 'general');
+    const previousSocketId = oldSocket.id;
+    // Keep the room registry entry while Socket.IO removes the disconnected socket.
+    const realLeave = rooms.leave.bind(rooms);
+    rooms.leave = () => {};
+    const disconnected = once(oldSocket, 'disconnect');
+    oldSocket.disconnect();
+    await disconnected;
+    rooms.leave = realLeave;
+    const replacement = await openSocket(account.cookie);
+    const result = await emit(replacement, 'join', { room: 'general', previousSocketId });
+    expect(result.ok).toBe(true);
+    expect(rooms.hasUser('general', 1)).toBe(true);
   });
 
   test('allows the same username in different rooms', async () => {
@@ -519,7 +559,7 @@ describe('private messages', () => {
     const receive = jest.fn();
     b.on('message', receive);
     const result = await emit(a, 'message', { text: 'must persist first' });
-    expect(result).toEqual({ ok: false, error: 'Message could not be saved. Please try again.' });
+    expect(result).toMatchObject({ ok: false, error: 'Message could not be saved. Please try again.', code: 'PERSISTENCE_ERROR', retryable: true });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(receive).not.toHaveBeenCalled();
     logError.mockRestore();

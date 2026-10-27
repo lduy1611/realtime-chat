@@ -11,8 +11,8 @@ const { TestUserStore, TestFileStore, createTestSession } = require('./helpers')
 let httpServer; let io; let url; let uploadsDir; let fileStore; let userStore;
 const clients = [];
 
-const request = (method, pathname, { cookie, body, contentType } = {}) => new Promise((resolve, reject) => {
-  const headers = { Origin: url };
+const request = (method, pathname, { cookie, body, contentType, headers: extraHeaders = {} } = {}) => new Promise((resolve, reject) => {
+  const headers = { Origin: url, ...extraHeaders };
   if (cookie) headers.Cookie = cookie;
   if (contentType) headers['Content-Type'] = contentType;
   if (body) headers['Content-Length'] = body.length;
@@ -28,9 +28,9 @@ const request = (method, pathname, { cookie, body, contentType } = {}) => new Pr
   req.end(body);
 });
 
-const signup = (username) => new Promise((resolve, reject) => {
+const signup = (username, extraHeaders = {}) => new Promise((resolve, reject) => {
   const body = Buffer.from(JSON.stringify({ username, password: 'TestPassword123!' }));
-  const req = http.request(url + '/api/auth/register', { method: 'POST', headers: { Origin: url, 'Content-Type': 'application/json', 'Content-Length': body.length } }, (res) => {
+  const req = http.request(url + '/api/auth/register', { method: 'POST', headers: { Origin: url, ...extraHeaders, 'Content-Type': 'application/json', 'Content-Length': body.length } }, (res) => {
     res.resume();
     res.on('end', () => resolve(res.headers['set-cookie'][0].split(';')[0]));
   });
@@ -47,8 +47,8 @@ function multipart(name, content, mime = 'application/octet-stream') {
   return { body, contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
-const openSocket = (cookie) => new Promise((resolve) => {
-  const client = Client(url, { forceNew: true, transports: ['websocket'], extraHeaders: { Cookie: cookie } });
+const openSocket = (cookie, extraHeaders = {}) => new Promise((resolve) => {
+  const client = Client(url, { forceNew: true, transports: ['websocket'], extraHeaders: { Cookie: cookie, ...extraHeaders } });
   clients.push(client); client.on('connect', () => resolve(client));
 });
 const emit = (client, event, payload) => new Promise((resolve) => client.emit(event, payload, resolve));
@@ -70,6 +70,26 @@ afterEach((done) => {
 });
 
 describe('authenticated room file sharing', () => {
+  test('accepts same-origin HTTPS Tunnel uploads while retaining authenticated download access', async () => {
+    const host = 'specific-tunnel.example.test';
+    const proxyHeaders = {
+      Origin: `https://${host}`,
+      'X-Forwarded-Host': host,
+      'X-Forwarded-Proto': 'https'
+    };
+    const cookie = await signup('alice', proxyHeaders);
+    const client = await openSocket(cookie, { 'X-Forwarded-Host': host, 'X-Forwarded-Proto': 'https' });
+    expect((await emit(client, 'join', { room: 'general' })).ok).toBe(true);
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]);
+    const upload = await request('POST', '/api/rooms/general/files', {
+      cookie, ...multipart('tunnel.png', png, 'image/png'), headers: proxyHeaders
+    });
+    expect(upload.status).toBe(201);
+    const download = await request('GET', '/api/files/1/download', { cookie });
+    expect(download.status).toBe(200);
+    expect(download.body).toEqual(png);
+  });
+
   test('uploads a valid image, broadcasts it to the room, and downloads it with membership', async () => {
     expect((await request('GET', '/api/files/1/download')).status).toBe(401);
     const cookie = await signup('alice');
