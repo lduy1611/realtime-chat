@@ -63,7 +63,7 @@ phòng đang hoạt động và nút Logout. Màn hình đăng nhập/đăng ký
 ## Cài đặt
 
 ```powershell
-git clone https://github.com/gunjit-web/realtime-chat.git
+git clone https://github.com/lduy1611/realtime-chat.git
 cd realtime-chat
 npm install
 Copy-Item .env.example .env
